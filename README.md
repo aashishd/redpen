@@ -13,7 +13,7 @@ contract is a shell command and its stdout, so it works with any coding agent.
 npm install -g redpen-review
 ```
 
-Requires Node 18 or newer. No dependencies.
+Requires Node 18 or newer. No runtime dependencies.
 
 ## Use
 
@@ -22,19 +22,38 @@ redpen plan.md
 ```
 
 Supported files are `.txt`, `.md`, `.markdown`, `.html`, `.htm`, and
-extensionless UTF-8 text files. Every other extension, including `.mdx`, is
-rejected before the browser server starts.
+extensionless UTF-8 text files. Every other extension, including `.mdx`, `.mmd`,
+and `.mermaid`, is rejected before the browser server starts.
+
+Markdown supports fenced Mermaid diagrams:
+
+````markdown
+```mermaid
+flowchart LR
+  Start --> Finish
+```
+````
+
+Mermaid is only rendered for `.md` and `.markdown` files. RedPen bundles the
+official Mermaid 11.17.2 `dist/mermaid.min.js` locally at `ui/mermaid.min.js`.
+Its MIT license is at `ui/mermaid.LICENSE`. The bundle adds about 3.6 MB to the
+package. Mermaid starts with strict security settings and rejects diagram
+frontmatter and every `%%{...}%%` directive, wherever it appears in the source.
+Invalid, oversized, or rejected diagrams stay as escaped source with a short
+error message.
 
 HTML is rendered as sanitized static content. RedPen removes scripts, styles,
 frames, embeds, forms and controls, SVG, MathML, URL-bearing attributes, and
 other active or externally loaded content.
 
 This starts a one-shot server on a random localhost port, opens the file in
-your browser, and blocks. In the browser you can:
+your browser, and blocks. Mermaid is served from that same local server. It has
+no CDN, runtime fetch, or external network request. In the browser you can:
 
-- select text and attach an inline comment to it; the Save button shows the platform modifier-click shortcut hint,
+- select text and attach an inline comment to it; Save shows `Save (⌘ + Click)` on macOS or `Save (Ctrl + Click)` elsewhere,
 - see each saved annotation marked with a hand-drawn red underline,
 - click an annotation to focus it with a red pen band, or edit its comment inline from the comments pane,
+- collapse comments with the `>` button on the document divider; the narrow `<` rail keeps clickable red annotation positions and survives reloads in the same browser tab,
 - choose **Auto**, **Dark**, or **Light** in the header; Auto follows your operating-system setting,
 - or turn on **Hover select** in the header: hovering marks a paragraph (or a
   line in plain-text files) and clicking it opens the comment box,

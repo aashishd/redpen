@@ -131,11 +131,15 @@ function serve(args) {
   const token = randomBytes(16).toString('hex');
   const html = readFileSync(join(PKG_ROOT, 'ui', 'index.html'), 'utf8');
   const markedJs = readFileSync(join(PKG_ROOT, 'ui', 'marked.min.js'), 'utf8');
+  const mermaidJs = readFileSync(join(PKG_ROOT, 'ui', 'mermaid.min.js'), 'utf8');
 
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     if (url.pathname === '/marked.min.js') {
       return send(res, 200, 'text/javascript; charset=utf-8', markedJs);
+    }
+    if (url.pathname === '/mermaid.min.js') {
+      return send(res, 200, 'text/javascript; charset=utf-8', mermaidJs);
     }
     if (url.searchParams.get('t') !== token) {
       return send(res, 403, 'text/plain', 'forbidden');

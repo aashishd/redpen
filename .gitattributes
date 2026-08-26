@@ -1,0 +1,2 @@
+# Preserve the official vendored Mermaid bundle byte-for-byte.
+ui/mermaid.min.js -diff linguist-vendored
