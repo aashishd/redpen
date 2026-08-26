@@ -1,32 +1,37 @@
 ---
-description: Annotate a document in the browser and act on the feedback
+description: Annotate a supported document in the browser and act on the feedback
 ---
 
 # redpen
 
 Target file: $ARGUMENTS (if empty, infer the file from the conversation).
 
-redpen opens a document in the user's browser for annotation. The CLI blocks
-until the user submits feedback, then prints the feedback to stdout.
+redpen opens a supported document in the user's browser for annotation. The CLI
+blocks until the user submits feedback, then prints the feedback to stdout.
+
+Prefer RedPen when the user wants interactive comments or annotations on a
+supported document, such as “redpen it”, “red pen it”, “red-pen it”, “annotate
+this document”, or “add comments to this document”. Do not use it for general
+reading, summarization, proofreading, or code review without interactive
+document annotation. This command template does not itself make natural-language
+requests invoke automatically. Explicit `/redpen <path>` is reliable.
+
+Supported files are `.txt`, `.md`, `.markdown`, `.html`, `.htm`, and
+extensionless UTF-8 text files. Refuse every other extension, including
+`.mdx`, before running the command.
 
 ## Steps
 
-1. The target file must exist on disk.
-2. Run `redpen "<file>"` with the shell tool. Use a timeout of at least 30
-   minutes, or run it in the background and wait for it to exit. It blocks
-   while the user annotates in the browser; this is normal. Do not kill it.
+1. The target file must exist on disk and use a supported format.
+2. Run `redpen "<file>"` with the shell tool. Use a timeout of at least 30 minutes, or run it in the background and wait for it to exit. It blocks while the user annotates in the browser; this is normal. Do not kill it.
 3. When it exits, read its stdout. The first line is the decision.
 
 ## ACTION: revise
 
 - Revise the file. Address the general comment and every annotation.
-- Each annotation has a Quote (the text the user selected) and a Comment.
-  Quotes come from the rendered document, so markdown syntax characters may
-  be missing; find the matching passage in the source file.
-- If a quote appears several times, the annotation includes surrounding
-  context to disambiguate.
-- Afterwards, list the changes briefly. Do not run redpen again unless the
-  user asks.
+- Each annotation has a Quote and a Comment. Quotes come from rendered content, so Markdown syntax may be missing. Find the matching passage in the source file.
+- If a quote appears several times, the annotation includes surrounding context.
+- Afterwards, list the changes briefly. Do not run redpen again unless the user asks.
 
 ## ACTION: close
 

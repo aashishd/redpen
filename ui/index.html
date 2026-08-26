@@ -116,6 +116,7 @@
     flex-direction: column;
     background: var(--bg-soft);
   }
+  aside[hidden] { display: none; }
   aside h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 8px; }
   aside section.general { padding: 16px 16px 8px; }
   aside section.general textarea {
@@ -168,6 +169,18 @@
   #list .del:hover { color: #c0392b; }
   #empty { color: var(--muted); font-size: 13px; }
   aside footer { padding: 14px 16px; border-top: 1px solid var(--border); display: grid; gap: 8px; }
+  button.pane-toggle {
+    margin-left: 4px;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--bg);
+    color: var(--muted);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  button.pane-toggle:hover { border-color: var(--accent); }
   button.action {
     padding: 9px 12px;
     border-radius: 6px;
@@ -259,6 +272,7 @@
     <span class="slider"></span>
     Hover select
   </label>
+  <button id="pane-toggle" class="pane-toggle" type="button" aria-controls="comments-pane" aria-expanded="true">Hide comments</button>
 </header>
 <main>
   <div id="docwrap">
@@ -266,7 +280,7 @@
     <article id="doc"></article>
     <svg id="ink-layer" aria-hidden="true"></svg>
   </div>
-  <aside>
+  <aside id="comments-pane">
     <section class="general">
       <h2>General comment</h2>
       <textarea id="general" placeholder="Overall feedback on the document (optional)"></textarea>
@@ -297,6 +311,7 @@
 
 const token = new URLSearchParams(location.search).get('t');
 const draftKey = 'redpen-draft:' + token;
+const paneKey = 'redpen-comments-collapsed:' + token;
 const docEl = document.getElementById('doc');
 const docWrap = document.getElementById('docwrap');
 const annotationBands = document.getElementById('annotation-bands');
@@ -311,6 +326,8 @@ const countEl = document.getElementById('count');
 const emptyEl = document.getElementById('empty');
 const reviseBtn = document.getElementById('revise');
 const closeBtn = document.getElementById('close-session');
+const paneToggle = document.getElementById('pane-toggle');
+const commentsPane = document.getElementById('comments-pane');
 
 let annotations = [];
 let nextId = 1;
@@ -329,14 +346,17 @@ async function init() {
   const meta = await res.json();
   document.getElementById('filename').textContent = meta.name;
   document.title = meta.name + ' · redpen';
-  if (meta.markdown) {
-    docEl.innerHTML = sanitize(marked.parse(meta.text));
+  if (meta.rendering === 'markdown') {
+    docEl.innerHTML = sanitizeMarkdown(marked.parse(meta.text));
+  } else if (meta.rendering === 'html') {
+    docEl.innerHTML = sanitizeHtml(meta.text);
   } else {
     const pre = document.createElement('pre');
     pre.className = 'plain';
     pre.textContent = meta.text;
     docEl.appendChild(pre);
   }
+  restorePaneState();
   const whole = document.createRange();
   whole.selectNodeContents(docEl);
   docText = whole.toString();
@@ -345,9 +365,8 @@ async function init() {
   updateSidebar();
 }
 
-// The document is a local file the user chose, but strip active content so a
-// reviewed document cannot run script in this page.
-function sanitize(htmlStr) {
+// Markdown generates HTML, so remove executable content and javascript URLs.
+function sanitizeMarkdown(htmlStr) {
   const tpl = document.createElement('template');
   tpl.innerHTML = htmlStr;
   tpl.content.querySelectorAll('script,iframe,object,embed,link,meta,style').forEach((n) => n.remove());
@@ -355,13 +374,53 @@ function sanitize(htmlStr) {
     for (const attr of [...el.attributes]) {
       const name = attr.name.toLowerCase();
       const value = attr.value.trim().toLowerCase();
-      if (name.startsWith('on')) el.removeAttribute(attr.name);
-      else if ((name === 'href' || name === 'src') && value.startsWith('javascript:')) el.removeAttribute(attr.name);
+      if (name.startsWith('on') || ((name === 'href' || name === 'src') && value.startsWith('javascript:'))) {
+        el.removeAttribute(attr.name);
+      }
     }
   });
   const div = document.createElement('div');
   div.appendChild(tpl.content);
   return div.innerHTML;
+}
+
+// HTML files are static review documents. Remove elements that can execute,
+// fetch, submit, or embed content, then remove every remaining attribute.
+function sanitizeHtml(htmlStr) {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = htmlStr;
+  tpl.content.querySelectorAll('script,style,link,meta,base,iframe,frame,frameset,object,embed,portal,form,input,button,select,textarea,option,optgroup,fieldset,legend,label,output,progress,meter,svg,math,img,picture,source,track,audio,video,canvas,template').forEach((n) => n.remove());
+  tpl.content.querySelectorAll('*').forEach((el) => {
+    for (const attr of [...el.attributes]) el.removeAttribute(attr.name);
+  });
+  const div = document.createElement('div');
+  div.appendChild(tpl.content);
+  return div.innerHTML;
+}
+
+paneToggle.addEventListener('click', () => setPaneCollapsed(!commentsPane.hidden));
+
+function restorePaneState() {
+  try {
+    setPaneCollapsed(sessionStorage.getItem(paneKey) === 'true', false);
+  } catch {
+    setPaneCollapsed(false, false);
+  }
+}
+
+function setPaneCollapsed(collapsed, persist = true) {
+  commentsPane.hidden = collapsed;
+  paneToggle.setAttribute('aria-expanded', String(!collapsed));
+  paneToggle.textContent = collapsed ? 'Show comments' : 'Hide comments';
+  paneToggle.setAttribute('aria-label', collapsed ? 'Show comments pane' : 'Hide comments pane');
+  if (persist) {
+    try {
+      sessionStorage.setItem(paneKey, String(collapsed));
+    } catch {
+      // Storage is optional. The in-memory state still works if it is blocked.
+    }
+  }
+  requestAnimationFrame(renderAnnotationInk);
 }
 
 // ---- selection -> "Add comment" button ----

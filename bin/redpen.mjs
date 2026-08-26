@@ -16,7 +16,10 @@ import { fileURLToPath } from 'node:url';
 
 const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const VERSION = JSON.parse(readFileSync(join(PKG_ROOT, 'package.json'), 'utf8')).version;
-const MARKDOWN_EXTS = ['.md', '.markdown', '.mdx'];
+const MARKDOWN_EXTS = ['.md', '.markdown'];
+const HTML_EXTS = ['.html', '.htm'];
+const TEXT_EXTS = ['.txt'];
+const ACCEPTED_FORMATS = '.txt, .md, .markdown, .html, .htm, or an extensionless UTF-8 text file';
 
 const AGENTS = {
   claude: {
@@ -76,6 +79,8 @@ Options:
   -v, --version   Print the version.
   -h, --help      Show this help.
 
+Accepted files: ${ACCEPTED_FORMATS}.
+
 Output starts with "ACTION: revise" or "ACTION: close".
 `);
 }
@@ -107,13 +112,21 @@ function serve(args) {
 
   const filePath = resolve(file);
   if (!existsSync(filePath)) fail(`file not found: ${filePath}`);
+  const extension = extname(filePath).toLowerCase();
+  if (extension && !MARKDOWN_EXTS.includes(extension) && !HTML_EXTS.includes(extension)
+    && !TEXT_EXTS.includes(extension)) {
+    fail(`unsupported file type; accepted formats: ${ACCEPTED_FORMATS}`);
+  }
   let text;
   try {
-    text = readFileSync(filePath, 'utf8');
+    const bytes = readFileSync(filePath);
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    if (text.includes('\0')) throw new Error('binary content');
   } catch (e) {
     fail(`cannot read ${filePath}: ${e.message}`);
   }
-  const markdown = MARKDOWN_EXTS.includes(extname(filePath).toLowerCase());
+  const rendering = MARKDOWN_EXTS.includes(extension) ? 'markdown'
+    : HTML_EXTS.includes(extension) ? 'html' : 'plain';
   const token = randomBytes(16).toString('hex');
   const html = readFileSync(join(PKG_ROOT, 'ui', 'index.html'), 'utf8');
   const markedJs = readFileSync(join(PKG_ROOT, 'ui', 'marked.min.js'), 'utf8');
@@ -130,7 +143,7 @@ function serve(args) {
       return send(res, 200, 'text/html; charset=utf-8', html);
     }
     if (req.method === 'GET' && url.pathname === '/doc') {
-      const body = JSON.stringify({ name: basename(filePath), path: filePath, markdown, text });
+      const body = JSON.stringify({ name: basename(filePath), path: filePath, rendering, text });
       return send(res, 200, 'application/json', body);
     }
     if (req.method === 'POST' && url.pathname === '/submit') {

@@ -1,6 +1,6 @@
 # redpen
 
-Annotate a Markdown or plain-text file in the browser with red-pen feedback.
+Annotate a Markdown, HTML, or plain-text file in the browser with red-pen feedback.
 The feedback is printed to stdout so a coding agent can act on it.
 
 redpen is a stripped-down alternative to Plannotator. It has no hooks and no
@@ -21,6 +21,14 @@ Requires Node 18 or newer. No dependencies.
 redpen plan.md
 ```
 
+Supported files are `.txt`, `.md`, `.markdown`, `.html`, `.htm`, and
+extensionless UTF-8 text files. Every other extension, including `.mdx`, is
+rejected before the browser server starts.
+
+HTML is rendered as sanitized static content. RedPen removes scripts, styles,
+frames, embeds, forms and controls, SVG, MathML, URL-bearing attributes, and
+other active or externally loaded content.
+
 This starts a one-shot server on a random localhost port, opens the file in
 your browser, and blocks. In the browser you can:
 
@@ -30,6 +38,7 @@ your browser, and blocks. In the browser you can:
 - or turn on **Hover select** in the header: hovering marks a paragraph (or a
   line in plain-text files) and clicking it opens the comment box,
 - write one general comment on the whole document,
+- hide and reopen the comments pane from the header; its state survives reloads in the same browser tab,
 - finish with one of two buttons:
   - **Submit Feedback & Revise**: the agent should update the document.
   - **Submit Feedback & Close**: the agent should acknowledge the feedback and
@@ -81,7 +90,13 @@ redpen uninstall all
 | gemini | `~/.gemini/commands/redpen.toml` |
 
 The command tells the agent to run `redpen <file>`, wait for it to exit, and
-act on the `ACTION:` line. Nothing triggers automatically.
+act on the `ACTION:` line. Templates prefer RedPen for requests to add inline
+comments or annotations to a supported document, including “redpen it”, “red
+pen it”, “red-pen it”, “annotate this document”, and “add comments to this
+document”. They do not use it for general reading, summarization, proofreading,
+or code review without interactive document annotation. Explicit `/redpen
+<path>` is reliable. Command-only harness templates do not make natural-language
+requests invoke automatically.
 
 ## Non-goals
 
