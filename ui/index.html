@@ -1,0 +1,972 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>redpen</title>
+<script src="/marked.min.js"></script>
+<style>
+  :root {
+    --border: #e3d2d2;
+    --muted: #756767;
+    --accent: #bd2028;
+    --accent-dark: #97171e;
+    --ink-red: #c6202c;
+    --ink-red-dark: #9e1520;
+    --bg: #fffdfd;
+    --bg-soft: #fff7f6;
+    --mark: #ffe2df;
+    --pen-cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 32 32'%3E%3Cpath fill='%23c6202c' d='m5 27 3.2-9.2L23.6 2.4l6 6L14.2 23.8z'/%3E%3Cpath fill='%2367181d' d='m5 27 7.4-3.2-4.2-4.2z'/%3E%3Cpath fill='%23fff4e8' d='m23.6 2.4 2-2 6 6-2 2z'/%3E%3C/svg%3E") 4 24;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: #261c1c;
+    background: var(--bg);
+  }
+  header {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  header .brand { color: var(--ink-red-dark); font-weight: 800; letter-spacing: .01em; }
+  header #filename { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  header .hint { margin-left: auto; color: var(--muted); font-size: 13px; }
+  main { display: flex; height: calc(100vh - 45px); }
+  #docwrap { position: relative; flex: 1; overflow-y: auto; }
+  #doc { position: relative; z-index: 1; max-width: 780px; margin: 0 auto; padding: 32px 48px 120px; }
+  #doc h1 { font-size: 1.7em; border-bottom: 1px solid var(--border); padding-bottom: .3em; }
+  #doc h2 { font-size: 1.35em; margin-top: 1.6em; }
+  #doc h3 { font-size: 1.1em; margin-top: 1.4em; }
+  #doc pre {
+    background: var(--bg-soft);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    overflow-x: auto;
+    font-size: 13px;
+  }
+  #doc code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; }
+  #doc :not(pre) > code { background: var(--bg-soft); border-radius: 4px; padding: 1px 5px; }
+  #doc blockquote { margin: 0; padding: 0 1em; color: var(--muted); border-left: 3px solid var(--border); }
+  #doc table { border-collapse: collapse; }
+  #doc th, #doc td { border: 1px solid var(--border); padding: 5px 10px; }
+  #doc img { max-width: 100%; }
+  #doc hr { border: none; border-top: 1px solid var(--border); }
+  #doc pre.plain { background: none; border: none; padding: 0; white-space: pre-wrap; font-size: 13.5px; }
+  #doc::selection { color: #5a1014; background: #ffcbc7; }
+  #annotation-bands, #ink-layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    pointer-events: none;
+  }
+  #annotation-bands { z-index: 2; }
+  #ink-layer { z-index: 3; }
+  ::highlight(redpen) { background-color: transparent; }
+  ::highlight(redpen-active) { background-color: #ffd7d3; color: #641018; }
+  ::highlight(redpen-pending) { background-color: #ffbcb8; color: #5a1014; }
+  ::highlight(redpen-hover) { background-color: #ffe5e2; }
+  #doc, #doc * { cursor: var(--pen-cursor), text; }
+  #doc a, #doc a * { cursor: pointer; }
+  .block-hover { background: #ffe8e5; outline: 1px solid #edb5b2; border-radius: 4px; }
+
+  .switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: 16px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .switch input { position: absolute; opacity: 0; }
+  .switch .slider {
+    width: 34px;
+    height: 18px;
+    border-radius: 999px;
+    background: #c9c9c9;
+    position: relative;
+    transition: background .15s;
+  }
+  .switch .slider::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #fff;
+    transition: left .15s;
+  }
+  .switch input:checked + .slider { background: var(--accent); }
+  .switch input:checked + .slider::after { left: 18px; }
+
+  aside {
+    width: 340px;
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-soft);
+  }
+  aside h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 8px; }
+  aside section.general { padding: 16px 16px 8px; }
+  aside section.general textarea {
+    width: 100%;
+    min-height: 72px;
+    resize: vertical;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px;
+    font: inherit;
+    font-size: 13.5px;
+  }
+  aside section.notes { flex: 1; overflow-y: auto; padding: 8px 16px; }
+  #list { list-style: none; margin: 0; padding: 0; }
+  #list li {
+    position: relative;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    cursor: pointer;
+  }
+  #list li:hover { border-color: var(--accent); }
+  #list li.active {
+    border-color: var(--accent);
+    background: repeating-linear-gradient(-45deg, #fff8f7 0 6px, #ffe7e4 6px 12px);
+    box-shadow: inset 4px 0 0 var(--ink-red);
+  }
+  #list blockquote {
+    margin: 0 18px 6px 0;
+    padding-left: 8px;
+    border-left: 3px solid var(--ink-red);
+    color: var(--muted);
+    font-size: 12.5px;
+    overflow-wrap: anywhere;
+  }
+  #list p { margin: 0; font-size: 13.5px; overflow-wrap: anywhere; }
+  #list .del {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    border: none;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 13px;
+    padding: 2px 5px;
+  }
+  #list .del:hover { color: #c0392b; }
+  #empty { color: var(--muted); font-size: 13px; }
+  aside footer { padding: 14px 16px; border-top: 1px solid var(--border); display: grid; gap: 8px; }
+  button.action {
+    padding: 9px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    font: inherit;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button.action.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.action.primary:hover:not(:disabled) { background: var(--accent-dark); }
+  button.action:hover:not(:disabled) { border-color: var(--accent); }
+  button.action:disabled { opacity: .45; cursor: default; }
+
+  #add-btn {
+    position: fixed;
+    z-index: 20;
+    padding: 5px 12px;
+    border: none;
+    border-radius: 999px;
+    background: var(--ink-red-dark);
+    color: #fff;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0,0,0,.25);
+  }
+  #popover {
+    position: fixed;
+    z-index: 30;
+    width: 340px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.18);
+    padding: 12px;
+  }
+  #popover blockquote {
+    margin: 0 0 8px;
+    padding-left: 8px;
+    border-left: 3px solid var(--ink-red);
+    color: var(--muted);
+    font-size: 12.5px;
+    max-height: 90px;
+    overflow-y: auto;
+    overflow-wrap: anywhere;
+  }
+  #popover textarea {
+    width: 100%;
+    min-height: 64px;
+    resize: vertical;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px;
+    font: inherit;
+    font-size: 13.5px;
+  }
+  #popover .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+  #popover .row button {
+    padding: 6px 14px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  #popover .row button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  #done {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+  #done h1 { font-size: 1.3em; margin: 0; }
+  #done p { color: var(--muted); margin: 0; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">redpen</span>
+  <span id="filename"></span>
+  <span class="hint" id="hint">Select text, or Shift-click after selecting a word to extend it</span>
+  <label class="switch" title="Highlight a paragraph or line on hover; click it to comment">
+    <input type="checkbox" id="block-toggle">
+    <span class="slider"></span>
+    Hover select
+  </label>
+</header>
+<main>
+  <div id="docwrap">
+    <svg id="annotation-bands" aria-hidden="true"></svg>
+    <article id="doc"></article>
+    <svg id="ink-layer" aria-hidden="true"></svg>
+  </div>
+  <aside>
+    <section class="general">
+      <h2>General comment</h2>
+      <textarea id="general" placeholder="Overall feedback on the document (optional)"></textarea>
+    </section>
+    <section class="notes">
+      <h2>Annotations <span id="count"></span></h2>
+      <ol id="list"></ol>
+      <p id="empty">No annotations yet.</p>
+    </section>
+    <footer>
+      <button id="revise" class="action primary" disabled>Submit Feedback &amp; Revise</button>
+      <button id="close-session" class="action">Submit Feedback &amp; Close</button>
+    </footer>
+  </aside>
+</main>
+<button id="add-btn" hidden>&#128172; Add comment</button>
+<div id="popover" hidden>
+  <blockquote id="pop-quote"></blockquote>
+  <textarea id="pop-comment" placeholder="Your comment&hellip;"></textarea>
+  <div class="row">
+    <button id="pop-cancel">Cancel</button>
+    <button id="pop-save" class="primary">Save</button>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+const token = new URLSearchParams(location.search).get('t');
+const draftKey = 'redpen-draft:' + token;
+const docEl = document.getElementById('doc');
+const docWrap = document.getElementById('docwrap');
+const annotationBands = document.getElementById('annotation-bands');
+const inkLayer = document.getElementById('ink-layer');
+const addBtn = document.getElementById('add-btn');
+const popover = document.getElementById('popover');
+const popQuote = document.getElementById('pop-quote');
+const popComment = document.getElementById('pop-comment');
+const generalEl = document.getElementById('general');
+const listEl = document.getElementById('list');
+const countEl = document.getElementById('count');
+const emptyEl = document.getElementById('empty');
+const reviseBtn = document.getElementById('revise');
+const closeBtn = document.getElementById('close-session');
+
+let annotations = [];
+let nextId = 1;
+let docText = '';
+let pendingRange = null;
+let activeAnnotation = null;
+
+init();
+
+async function init() {
+  const res = await fetch('/doc?t=' + token);
+  if (!res.ok) {
+    docEl.textContent = 'Could not load the document. The redpen session may have ended.';
+    return;
+  }
+  const meta = await res.json();
+  document.getElementById('filename').textContent = meta.name;
+  document.title = meta.name + ' · redpen';
+  if (meta.markdown) {
+    docEl.innerHTML = sanitize(marked.parse(meta.text));
+  } else {
+    const pre = document.createElement('pre');
+    pre.className = 'plain';
+    pre.textContent = meta.text;
+    docEl.appendChild(pre);
+  }
+  const whole = document.createRange();
+  whole.selectNodeContents(docEl);
+  docText = whole.toString();
+  restoreDraft();
+  refreshHighlights();
+  updateSidebar();
+}
+
+// The document is a local file the user chose, but strip active content so a
+// reviewed document cannot run script in this page.
+function sanitize(htmlStr) {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = htmlStr;
+  tpl.content.querySelectorAll('script,iframe,object,embed,link,meta,style').forEach((n) => n.remove());
+  tpl.content.querySelectorAll('*').forEach((el) => {
+    for (const attr of [...el.attributes]) {
+      const name = attr.name.toLowerCase();
+      const value = attr.value.trim().toLowerCase();
+      if (name.startsWith('on')) el.removeAttribute(attr.name);
+      else if ((name === 'href' || name === 'src') && value.startsWith('javascript:')) el.removeAttribute(attr.name);
+    }
+  });
+  const div = document.createElement('div');
+  div.appendChild(tpl.content);
+  return div.innerHTML;
+}
+
+// ---- selection -> "Add comment" button ----
+
+document.addEventListener('mouseup', (e) => {
+  if (popover.contains(e.target) || addBtn.contains(e.target)) return;
+  setTimeout(maybeShowAddButton, 0);
+});
+docWrap.addEventListener('scroll', () => {
+  hideAddButton();
+  renderAnnotationInk();
+});
+docEl.addEventListener('scroll', renderAnnotationInk, true);
+window.addEventListener('resize', renderAnnotationInk);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    closePopover();
+    hideAddButton();
+  }
+});
+
+function maybeShowAddButton() {
+  if (!popover.hidden) return;
+  const sel = getSelection();
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return hideAddButton();
+  const range = sel.getRangeAt(0);
+  if (!docEl.contains(range.commonAncestorContainer)) return hideAddButton();
+  if (!range.toString().trim()) return hideAddButton();
+  pendingRange = range.cloneRange();
+  const rect = range.getBoundingClientRect();
+  addBtn.hidden = false;
+  const w = addBtn.offsetWidth;
+  addBtn.style.left = clamp(rect.left + rect.width / 2 - w / 2, 8, innerWidth - w - 8) + 'px';
+  addBtn.style.top = Math.min(rect.bottom + 8, innerHeight - 44) + 'px';
+}
+
+function hideAddButton() {
+  addBtn.hidden = true;
+}
+
+function clamp(v, lo, hi) {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+addBtn.addEventListener('click', () => {
+  if (!pendingRange) return;
+  const rect = addBtn.getBoundingClientRect();
+  hideAddButton();
+  openPopoverAt(rect.left, rect.top, pendingRange.toString());
+});
+
+function openPopoverAt(x, y, quote) {
+  popQuote.textContent = quote;
+  popComment.value = '';
+  popover.hidden = false;
+  refreshPendingHighlight();
+  popover.style.left = clamp(x, 8, innerWidth - popover.offsetWidth - 8) + 'px';
+  popover.style.top = clamp(y, 8, innerHeight - popover.offsetHeight - 8) + 'px';
+  popComment.focus();
+}
+
+// ---- hover-select mode: hover highlights a block or line, click comments it ----
+
+const blockToggle = document.getElementById('block-toggle');
+const hintEl = document.getElementById('hint');
+const BLOCK_SELECTOR = 'p, h1, h2, h3, h4, h5, h6, li, pre, blockquote, tr';
+let blockMode = false;
+let hoverBlock = null; // highlighted markdown block element
+let hoverLine = null;  // { node, start, range } for a plain-text line
+
+blockToggle.addEventListener('change', () => {
+  blockMode = blockToggle.checked;
+  docEl.classList.toggle('block-mode', blockMode);
+  hintEl.textContent = blockMode
+    ? 'Click a highlighted block to comment on it'
+    : 'Select text, or Shift-click after selecting a word to extend it';
+  clearHover();
+});
+
+docWrap.addEventListener('mousemove', (e) => {
+  if (!blockMode || !popover.hidden) return;
+  const block = e.target.closest ? e.target.closest(BLOCK_SELECTOR) : null;
+  if (!block || !docEl.contains(block)) return clearHover();
+  if (block.classList.contains('plain')) return hoverPlainLine(block, e);
+  clearLineHover();
+  if (hoverBlock === block) return;
+  clearBlockHover();
+  hoverBlock = block;
+  block.classList.add('block-hover');
+});
+docWrap.addEventListener('mouseleave', clearHover);
+
+function hoverPlainLine(pre, e) {
+  clearBlockHover();
+  const pos = caretFromPoint(e.clientX, e.clientY);
+  if (!pos || pos.node.nodeType !== Node.TEXT_NODE || !pre.contains(pos.node)) {
+    return clearLineHover();
+  }
+  const text = pos.node.data;
+  const start = text.lastIndexOf('\n', pos.offset - 1) + 1;
+  let end = text.indexOf('\n', pos.offset);
+  if (end === -1) end = text.length;
+  if (start >= end) return clearLineHover();
+  if (hoverLine && hoverLine.node === pos.node && hoverLine.start === start) return;
+  const range = document.createRange();
+  range.setStart(pos.node, start);
+  range.setEnd(pos.node, end);
+  hoverLine = { node: pos.node, start, range };
+  if ('highlights' in CSS) {
+    CSS.highlights.set('redpen-hover', new Highlight(range));
+  } else {
+    renderAnnotationInk();
+  }
+}
+
+function caretFromPoint(x, y) {
+  if (document.caretRangeFromPoint) {
+    const r = document.caretRangeFromPoint(x, y);
+    return r ? { node: r.startContainer, offset: r.startOffset } : null;
+  }
+  if (document.caretPositionFromPoint) {
+    const p = document.caretPositionFromPoint(x, y);
+    return p ? { node: p.offsetNode, offset: p.offset } : null;
+  }
+  return null;
+}
+
+function clearBlockHover() {
+  if (hoverBlock) {
+    hoverBlock.classList.remove('block-hover');
+    hoverBlock = null;
+  }
+}
+
+function clearLineHover() {
+  const hadHoverLine = hoverLine !== null;
+  hoverLine = null;
+  if ('highlights' in CSS) {
+    CSS.highlights.delete('redpen-hover');
+  } else if (hadHoverLine) {
+    renderAnnotationInk();
+  }
+}
+
+function clearHover() {
+  clearBlockHover();
+  clearLineHover();
+}
+
+function rangeBetween(first, second) {
+  const firstComesFirst = first.compareBoundaryPoints(Range.START_TO_START, second) <= 0;
+  const start = firstComesFirst ? first : second;
+  const end = firstComesFirst ? second : first;
+  const range = document.createRange();
+  range.setStart(start.startContainer, start.startOffset);
+  range.setEnd(end.endContainer, end.endOffset);
+  return range;
+}
+
+function selectedDocumentRange() {
+  const selection = getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
+  const range = selection.getRangeAt(0);
+  if (!docEl.contains(range.commonAncestorContainer) || !range.toString().trim()) return null;
+  return range.cloneRange();
+}
+
+function wordRangeAtPoint(x, y) {
+  const position = caretFromPoint(x, y);
+  if (!position || position.node.nodeType !== Node.TEXT_NODE || !docEl.contains(position.node)) return null;
+  const text = position.node.data;
+  if (!text) return null;
+  let index = Math.min(position.offset, text.length - 1);
+  if (!isWordCharacter(text[index]) && index > 0 && isWordCharacter(text[index - 1])) index--;
+  if (!isWordCharacter(text[index])) return null;
+  let start = index;
+  let end = index + 1;
+  while (start > 0 && isWordCharacter(text[start - 1])) start--;
+  while (end < text.length && isWordCharacter(text[end])) end++;
+  const range = document.createRange();
+  range.setStart(position.node, start);
+  range.setEnd(position.node, end);
+  return range;
+}
+
+function isWordCharacter(character) {
+  return /[\p{L}\p{N}_'’-]/u.test(character);
+}
+
+docEl.addEventListener('mousedown', (e) => {
+  if (blockMode || !popover.hidden || e.button !== 0 || !e.shiftKey) return;
+  const firstRange = selectedDocumentRange();
+  const secondRange = wordRangeAtPoint(e.clientX, e.clientY);
+  if (!firstRange || !secondRange) return;
+  e.preventDefault();
+  const range = rangeBetween(firstRange, secondRange);
+  const selection = getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+  pendingRange = range.cloneRange();
+  setTimeout(maybeShowAddButton, 0);
+});
+
+docEl.addEventListener('click', (e) => {
+  if (!blockMode || !popover.hidden) return;
+  const sel = getSelection();
+  if (sel && !sel.isCollapsed && sel.toString().trim()) return; // manual selection wins
+  let range = null;
+  if (hoverLine) {
+    range = hoverLine.range.cloneRange();
+  } else if (hoverBlock && hoverBlock.contains(e.target)) {
+    range = document.createRange();
+    range.selectNodeContents(hoverBlock);
+  }
+  if (!range || !range.toString().trim()) return;
+  e.preventDefault();
+  pendingRange = range;
+  hideAddButton();
+  openPopoverAt(e.clientX, e.clientY + 8, range.toString());
+});
+
+// ---- popover ----
+
+document.getElementById('pop-cancel').addEventListener('click', closePopover);
+document.getElementById('pop-save').addEventListener('click', saveAnnotation);
+popComment.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) saveAnnotation();
+});
+
+function closePopover() {
+  popover.hidden = true;
+  pendingRange = null;
+  refreshPendingHighlight();
+}
+
+function saveAnnotation() {
+  const comment = popComment.value.trim();
+  if (!comment) {
+    popComment.focus();
+    return;
+  }
+  const range = pendingRange;
+  const details = describeRange(range);
+  const annotation = { id: nextId++, range, comment, ...details };
+  annotations.push(annotation);
+  activeAnnotation = null;
+  closePopover();
+  getSelection().removeAllRanges();
+  clearHover();
+  refreshHighlights();
+  updateSidebar();
+  persistDraft();
+}
+
+function describeRange(range) {
+  const pre = range.cloneRange();
+  pre.selectNodeContents(docEl);
+  pre.setEnd(range.startContainer, range.startOffset);
+  const start = pre.toString().length;
+  const quote = range.toString();
+  const end = start + quote.length;
+  const prefix = docText.slice(Math.max(0, start - 40), start);
+  const suffix = docText.slice(end, end + 40);
+  let occurrences = 0;
+  let idx = -1;
+  if (quote) {
+    while ((idx = docText.indexOf(quote, idx + 1)) !== -1) occurrences++;
+  }
+  return { quote, prefix, suffix, occurrences };
+}
+
+// ---- reload persistence ----
+
+function persistDraft() {
+  const draft = {
+    general: generalEl.value,
+    annotations: annotations.map(({ id, quote, prefix, suffix, occurrences, comment }) => (
+      { id, quote, prefix, suffix, occurrences, comment }
+    )),
+  };
+  try {
+    if (!draft.general.trim() && draft.annotations.length === 0) {
+      sessionStorage.removeItem(draftKey);
+    } else {
+      sessionStorage.setItem(draftKey, JSON.stringify(draft));
+    }
+  } catch {
+    // Storage is optional. The in-memory session still works if it is blocked.
+  }
+}
+
+function restoreDraft() {
+  let draft;
+  try {
+    const raw = sessionStorage.getItem(draftKey);
+    if (!raw) return;
+    draft = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  if (!draft || typeof draft !== 'object') return;
+  if (typeof draft.general === 'string') generalEl.value = draft.general;
+  if (!Array.isArray(draft.annotations)) return;
+
+  const restored = [];
+  for (const stored of draft.annotations) {
+    if (!stored || typeof stored.quote !== 'string' || typeof stored.comment !== 'string') continue;
+    const range = findStoredRange(stored);
+    if (!range) continue;
+    const id = Number.isInteger(stored.id) && stored.id > 0 ? stored.id : restored.length + 1;
+    restored.push({ id, range, comment: stored.comment, ...describeRange(range) });
+  }
+  annotations = restored;
+  nextId = restored.reduce((largest, annotation) => Math.max(largest, annotation.id), 0) + 1;
+}
+
+function findStoredRange(stored) {
+  if (!stored.quote) return null;
+  let bestStart = -1;
+  let bestScore = -1;
+  let start = docText.indexOf(stored.quote);
+  while (start !== -1) {
+    const before = docText.slice(Math.max(0, start - String(stored.prefix || '').length), start);
+    const after = docText.slice(start + stored.quote.length, start + stored.quote.length + String(stored.suffix || '').length);
+    const score = matchingSuffixLength(String(stored.prefix || ''), before)
+      + matchingPrefixLength(String(stored.suffix || ''), after);
+    if (score > bestScore) {
+      bestStart = start;
+      bestScore = score;
+    }
+    start = docText.indexOf(stored.quote, start + 1);
+  }
+  return bestStart === -1 ? null : rangeFromTextOffsets(bestStart, bestStart + stored.quote.length);
+}
+
+function matchingSuffixLength(expected, value) {
+  let matched = 0;
+  while (matched < expected.length && matched < value.length
+    && expected[expected.length - matched - 1] === value[value.length - matched - 1]) {
+    matched++;
+  }
+  return matched;
+}
+
+function matchingPrefixLength(expected, value) {
+  let matched = 0;
+  while (matched < expected.length && matched < value.length && expected[matched] === value[matched]) {
+    matched++;
+  }
+  return matched;
+}
+
+function rangeFromTextOffsets(start, end) {
+  const walker = document.createTreeWalker(docEl, NodeFilter.SHOW_TEXT);
+  let offset = 0;
+  let startNode;
+  let startOffset;
+  let endNode;
+  let endOffset;
+  let node;
+  while ((node = walker.nextNode())) {
+    const nextOffset = offset + node.data.length;
+    if (startNode === undefined && start >= offset && start <= nextOffset) {
+      startNode = node;
+      startOffset = start - offset;
+    }
+    if (endNode === undefined && end >= offset && end <= nextOffset) {
+      endNode = node;
+      endOffset = end - offset;
+    }
+    if (startNode && endNode) break;
+    offset = nextOffset;
+  }
+  if (!startNode || !endNode) return null;
+  const range = document.createRange();
+  range.setStart(startNode, startOffset);
+  range.setEnd(endNode, endOffset);
+  return range;
+}
+
+function clearDraft() {
+  try {
+    sessionStorage.removeItem(draftKey);
+  } catch {
+    // Storage is optional.
+  }
+}
+
+// ---- highlights + sidebar ----
+
+function refreshHighlights() {
+  if ('highlights' in CSS) {
+    if (annotations.length) {
+      CSS.highlights.set('redpen', new Highlight(...annotations.map((a) => a.range)));
+    } else {
+      CSS.highlights.delete('redpen');
+    }
+    if (activeAnnotation) {
+      CSS.highlights.set('redpen-active', new Highlight(activeAnnotation.range));
+    } else {
+      CSS.highlights.delete('redpen-active');
+    }
+  }
+  refreshPendingHighlight();
+}
+
+function refreshPendingHighlight() {
+  if ('highlights' in CSS) {
+    if (pendingRange) {
+      CSS.highlights.set('redpen-pending', new Highlight(pendingRange));
+    } else {
+      CSS.highlights.delete('redpen-pending');
+    }
+  }
+  renderAnnotationInk();
+}
+
+function updateSidebar() {
+  listEl.innerHTML = '';
+  for (const a of annotations) {
+    const li = document.createElement('li');
+    if (a === activeAnnotation) li.classList.add('active');
+    const del = document.createElement('button');
+    del.className = 'del';
+    del.textContent = '✕';
+    del.title = 'Remove annotation';
+    del.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const wasActive = activeAnnotation === a;
+      annotations = annotations.filter((x) => x !== a);
+      if (wasActive) activeAnnotation = annotations[0] || null;
+      refreshHighlights();
+      updateSidebar();
+      persistDraft();
+    });
+    const q = document.createElement('blockquote');
+    q.textContent = a.quote.length > 140 ? a.quote.slice(0, 140) + '…' : a.quote;
+    const c = document.createElement('p');
+    c.textContent = a.comment;
+    li.addEventListener('click', () => openAnnotation(a));
+    li.append(del, q, c);
+    listEl.appendChild(li);
+  }
+  countEl.textContent = annotations.length ? '(' + annotations.length + ')' : '';
+  emptyEl.hidden = annotations.length > 0;
+  updateButtons();
+}
+
+function openAnnotation(annotation) {
+  if (activeAnnotation !== annotation) {
+    activeAnnotation = annotation;
+    refreshHighlights();
+    updateSidebar();
+  }
+  scrollToRange(annotation.range);
+}
+
+function scrollToRange(range) {
+  const node = range.startContainer;
+  const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function renderAnnotationInk() {
+  annotationBands.replaceChildren();
+  inkLayer.replaceChildren();
+  if (!annotations.length && !hoverLine && !pendingRange) return;
+
+  const width = docWrap.clientWidth;
+  const height = Math.max(docWrap.clientHeight, docWrap.scrollHeight);
+  configureInkLayer(annotationBands, width, height);
+  configureInkLayer(inkLayer, width, height);
+  const wrapRect = docWrap.getBoundingClientRect();
+
+  for (const annotation of annotations) {
+    const rects = [...annotation.range.getClientRects()]
+      .filter((rect) => rect.width > 2 && rect.height > 2);
+    rects.forEach((rect, index) => {
+      const x = rect.left - wrapRect.left + docWrap.scrollLeft;
+      const y = rect.bottom - wrapRect.top + docWrap.scrollTop;
+      const lineWidth = Math.min(rect.width, width - x);
+      if (lineWidth <= 2) return;
+      if (annotation === activeAnnotation) {
+        appendAnnotationBand(x, y - rect.height, lineWidth, rect.height);
+      }
+      appendInkLine(x, y + 1.5, lineWidth, annotation.id, index, annotation === activeAnnotation);
+    });
+  }
+  if (hoverLine && !('highlights' in CSS)) {
+    appendHoverBand(hoverLine.range, wrapRect, width);
+  }
+  if (pendingRange && !('highlights' in CSS)) {
+    appendPendingBand(pendingRange, wrapRect, width);
+  }
+}
+
+function configureInkLayer(layer, width, height) {
+  layer.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  layer.setAttribute('width', width);
+  layer.setAttribute('height', height);
+  layer.style.height = height + 'px';
+}
+
+function appendAnnotationBand(x, y, width, height, fill = '#ffd2cd', opacity = '.72') {
+  const band = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  band.setAttribute('x', Math.max(0, x - 2));
+  band.setAttribute('y', Math.max(0, y + 2));
+  band.setAttribute('width', width + 4);
+  band.setAttribute('height', Math.max(4, height - 3));
+  band.setAttribute('rx', '3');
+  band.setAttribute('fill', fill);
+  band.setAttribute('opacity', opacity);
+  annotationBands.appendChild(band);
+}
+
+function appendHoverBand(range, wrapRect, maxWidth) {
+  appendRangeBand(range, wrapRect, maxWidth, '#ffe5e2', '.9');
+}
+
+function appendPendingBand(range, wrapRect, maxWidth) {
+  appendRangeBand(range, wrapRect, maxWidth, '#ffbcb8', '.88');
+}
+
+function appendRangeBand(range, wrapRect, maxWidth, fill, opacity) {
+  const rects = [...range.getClientRects()].filter((rect) => rect.width > 2 && rect.height > 2);
+  for (const rect of rects) {
+    const x = rect.left - wrapRect.left + docWrap.scrollLeft;
+    const y = rect.bottom - wrapRect.top + docWrap.scrollTop;
+    const width = Math.min(rect.width, maxWidth - x);
+    if (width > 2) appendAnnotationBand(x, y - rect.height, width, rect.height, fill, opacity);
+  }
+}
+
+function appendInkLine(x, y, width, annotationId, lineIndex, active) {
+  const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  line.setAttribute('d', inkPath(x, y, width, annotationId * 11 + lineIndex * 7));
+  line.setAttribute('fill', 'none');
+  line.setAttribute('stroke', active ? '#9e1520' : '#c6202c');
+  line.setAttribute('stroke-width', active ? '2.8' : '2.25');
+  line.setAttribute('stroke-linecap', 'round');
+  line.setAttribute('stroke-linejoin', 'round');
+  inkLayer.appendChild(line);
+}
+
+function inkPath(x, y, width, seed) {
+  const segments = Math.max(3, Math.ceil(width / 24));
+  const step = width / segments;
+  let path = `M ${x - 1.5} ${y + ((seed % 5) - 2) * .22}`;
+  for (let index = 1; index <= segments; index++) {
+    const controlX = x + (index - .5) * step;
+    const controlY = y + (((seed + index * 7) % 5) - 2) * .55;
+    const endX = x + index * step + (index === segments ? 1.5 : 0);
+    const endY = y + (((seed + index * 3) % 5) - 2) * .35;
+    path += ` Q ${controlX.toFixed(1)} ${controlY.toFixed(1)} ${endX.toFixed(1)} ${endY.toFixed(1)}`;
+  }
+  return path;
+}
+
+generalEl.addEventListener('input', () => {
+  updateButtons();
+  persistDraft();
+});
+
+function updateButtons() {
+  reviseBtn.disabled = annotations.length === 0 && !generalEl.value.trim();
+}
+
+// ---- submit ----
+
+reviseBtn.addEventListener('click', () => submit('revise'));
+closeBtn.addEventListener('click', () => submit('close'));
+
+async function submit(action) {
+  reviseBtn.disabled = true;
+  closeBtn.disabled = true;
+  const payload = {
+    action,
+    general: generalEl.value.trim(),
+    annotations: annotations.map(({ quote, prefix, suffix, occurrences, comment }) => (
+      { quote, prefix, suffix, occurrences, comment }
+    )),
+  };
+  try {
+    const res = await fetch('/submit?t=' + token, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    clearDraft();
+    showDone(action);
+  } catch (err) {
+    alert('Submitting failed: ' + err.message);
+    closeBtn.disabled = false;
+    updateButtons();
+  }
+}
+
+function showDone(action) {
+  const detail = action === 'revise'
+    ? 'The agent will now revise the document.'
+    : 'The feedback was delivered. The session is closed.';
+  document.body.innerHTML = '<div id="done"><h1>Feedback sent</h1>'
+    + '<p>' + detail + '</p><p>You can close this tab.</p></div>';
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+{
+  "name": "redpen",
+  "version": "0.2.0",
+  "description": "Collect red-pen feedback on a markdown or plain-text file in the browser. Feedback is printed to stdout for a coding agent to act on.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "redpen": "bin/redpen.mjs"
+  },
+  "files": [
+    "bin",
+    "ui",
+    "agents",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "annotation",
+    "markdown",
+    "review",
+    "feedback",
+    "coding-agent",
+    "claude-code",
+    "codex",
+    "opencode"
+  ]
+}
