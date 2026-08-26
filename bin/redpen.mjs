@@ -6,7 +6,7 @@
 
 import { createServer } from 'node:http';
 import {
-  existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync,
+  existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync,
 } from 'node:fs';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -20,6 +20,7 @@ const MARKDOWN_EXTS = ['.md', '.markdown'];
 const HTML_EXTS = ['.html', '.htm'];
 const TEXT_EXTS = ['.txt'];
 const ACCEPTED_FORMATS = '.txt, .md, .markdown, .html, .htm, or an extensionless UTF-8 text file';
+const SETTINGS_FILE = settingsFile();
 
 const AGENTS = {
   claude: {
@@ -142,6 +143,12 @@ function serve(args) {
     if (req.method === 'GET' && url.pathname === '/') {
       return send(res, 200, 'text/html; charset=utf-8', html);
     }
+    if (req.method === 'GET' && url.pathname === '/settings/theme') {
+      return send(res, 200, 'application/json', JSON.stringify({ theme: readThemeSetting() }));
+    }
+    if (req.method === 'POST' && url.pathname === '/settings/theme') {
+      return handleThemeSetting(req, res);
+    }
     if (req.method === 'GET' && url.pathname === '/doc') {
       const body = JSON.stringify({ name: basename(filePath), path: filePath, rendering, text });
       return send(res, 200, 'application/json', body);
@@ -151,6 +158,28 @@ function serve(args) {
     }
     send(res, 404, 'text/plain', 'not found');
   });
+
+  function handleThemeSetting(req, res) {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      let theme;
+      try {
+        ({ theme } = JSON.parse(body));
+      } catch {
+        return send(res, 400, 'application/json', JSON.stringify({ error: 'Theme must be auto, light, or dark.' }));
+      }
+      if (!['auto', 'light', 'dark'].includes(theme)) {
+        return send(res, 400, 'application/json', JSON.stringify({ error: 'Theme must be auto, light, or dark.' }));
+      }
+      try {
+        writeThemeSetting(theme);
+      } catch (error) {
+        return send(res, 500, 'application/json', JSON.stringify({ error: `Could not save theme setting: ${error.message}` }));
+      }
+      send(res, 200, 'application/json', JSON.stringify({ theme }));
+    });
+  }
 
   function handleSubmit(req, res) {
     let body = '';
@@ -179,6 +208,34 @@ function serve(args) {
     process.stderr.write('redpen: waiting for feedback from the browser...\n');
     if (open) openBrowser(link);
   });
+}
+
+function settingsFile() {
+  if (process.env.XDG_CONFIG_HOME) return join(process.env.XDG_CONFIG_HOME, 'redpen', 'settings.json');
+  if (process.platform === 'win32') return join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'redpen', 'settings.json');
+  if (process.platform === 'darwin') return join(homedir(), 'Library', 'Application Support', 'redpen', 'settings.json');
+  return join(homedir(), '.config', 'redpen', 'settings.json');
+}
+
+function readThemeSetting() {
+  try {
+    const settings = JSON.parse(readFileSync(SETTINGS_FILE, 'utf8'));
+    return ['auto', 'light', 'dark'].includes(settings?.theme) ? settings.theme : 'auto';
+  } catch {
+    return 'auto';
+  }
+}
+
+function writeThemeSetting(theme) {
+  const dir = dirname(SETTINGS_FILE);
+  mkdirSync(dir, { recursive: true });
+  const temporary = join(dir, `.settings-${process.pid}-${randomBytes(6).toString('hex')}.tmp`);
+  try {
+    writeFileSync(temporary, JSON.stringify({ theme }) + '\n', { mode: 0o600 });
+    renameSync(temporary, SETTINGS_FILE);
+  } finally {
+    if (existsSync(temporary)) rmSync(temporary);
+  }
 }
 
 function send(res, status, type, body) {

@@ -15,29 +15,71 @@
     --ink-red-dark: #9e1520;
     --bg: #fffdfd;
     --bg-soft: #fff7f6;
+    --text: #261c1c;
     --mark: #ffe2df;
+    --active-mark: #ffd7d3;
+    --pending-mark: #ffbcb8;
+    --hover-mark: #ffe5e2;
+    --active-band: #ffd2cd;
+    --selection-text: #5a1014;
+    --selection-bg: #ffcbc7;
+    --shadow: rgba(0,0,0,.18);
     --pen-cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 32 32'%3E%3Cpath fill='%23c6202c' d='m5 27 3.2-9.2L23.6 2.4l6 6L14.2 23.8z'/%3E%3Cpath fill='%2367181d' d='m5 27 7.4-3.2-4.2-4.2z'/%3E%3Cpath fill='%23fff4e8' d='m23.6 2.4 2-2 6 6-2 2z'/%3E%3C/svg%3E") 4 24;
+  }
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --border: #624b4d;
+    --muted: #c5adaf;
+    --accent: #e95058;
+    --accent-dark: #ff6c72;
+    --ink-red: #fa6268;
+    --ink-red-dark: #ff8589;
+    --bg: #21191a;
+    --bg-soft: #2d2224;
+    --text: #f8ebeb;
+    --mark: #4b292b;
+    --active-mark: #653438;
+    --pending-mark: #74383b;
+    --hover-mark: #44282a;
+    --active-band: #613236;
+    --selection-text: #fff5f5;
+    --selection-bg: #803b40;
+    --shadow: rgba(0,0,0,.5);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme]) {
+      --border: #624b4d; --muted: #c5adaf; --accent: #e95058; --accent-dark: #ff6c72;
+      --ink-red: #fa6268; --ink-red-dark: #ff8589; --bg: #21191a; --bg-soft: #2d2224;
+      --text: #f8ebeb; --mark: #4b292b; --active-mark: #653438; --pending-mark: #74383b;
+      --hover-mark: #44282a; --active-band: #613236; --selection-text: #fff5f5;
+      --selection-bg: #803b40; --shadow: rgba(0,0,0,.5);
+    }
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body {
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
     margin: 0;
     font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    color: #261c1c;
+    color: var(--text);
     background: var(--bg);
   }
   header {
     display: flex;
-    align-items: baseline;
-    gap: 12px;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
     padding: 10px 20px;
     border-bottom: 1px solid var(--border);
   }
   header .brand { color: var(--ink-red-dark); font-weight: 800; letter-spacing: .01em; }
-  header #filename { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
-  header .hint { margin-left: auto; color: var(--muted); font-size: 13px; }
-  main { display: flex; height: calc(100vh - 45px); }
-  #docwrap { position: relative; flex: 1; overflow-y: auto; }
+  header #filename { min-width: 0; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  header .hint { flex: 1 1 220px; margin-left: auto; color: var(--muted); font-size: 13px; }
+  main { display: flex; flex: 1; min-height: 0; }
+  #docwrap { position: relative; flex: 1; min-width: 0; overflow-y: auto; }
   #doc { position: relative; z-index: 1; max-width: 780px; margin: 0 auto; padding: 32px 48px 120px; }
   #doc h1 { font-size: 1.7em; border-bottom: 1px solid var(--border); padding-bottom: .3em; }
   #doc h2 { font-size: 1.35em; margin-top: 1.6em; }
@@ -58,7 +100,7 @@
   #doc img { max-width: 100%; }
   #doc hr { border: none; border-top: 1px solid var(--border); }
   #doc pre.plain { background: none; border: none; padding: 0; white-space: pre-wrap; font-size: 13.5px; }
-  #doc::selection { color: #5a1014; background: #ffcbc7; }
+  #doc::selection { color: var(--selection-text); background: var(--selection-bg); }
   #annotation-bands, #ink-layer {
     position: absolute;
     top: 0;
@@ -69,12 +111,12 @@
   #annotation-bands { z-index: 2; }
   #ink-layer { z-index: 3; }
   ::highlight(redpen) { background-color: transparent; }
-  ::highlight(redpen-active) { background-color: #ffd7d3; color: #641018; }
-  ::highlight(redpen-pending) { background-color: #ffbcb8; color: #5a1014; }
-  ::highlight(redpen-hover) { background-color: #ffe5e2; }
+  ::highlight(redpen-active) { background-color: var(--active-mark); color: var(--text); }
+  ::highlight(redpen-pending) { background-color: var(--pending-mark); color: var(--text); }
+  ::highlight(redpen-hover) { background-color: var(--hover-mark); }
   #doc, #doc * { cursor: var(--pen-cursor), text; }
   #doc a, #doc a * { cursor: pointer; }
-  .block-hover { background: #ffe8e5; outline: 1px solid #edb5b2; border-radius: 4px; }
+  .block-hover { background: var(--hover-mark); outline: 1px solid var(--accent); border-radius: 4px; }
 
   .switch {
     display: inline-flex;
@@ -119,6 +161,10 @@
   aside[hidden] { display: none; }
   aside h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 8px; }
   aside section.general { padding: 16px 16px 8px; }
+  textarea {
+    color: var(--text);
+    background: var(--bg);
+  }
   aside section.general textarea {
     width: 100%;
     min-height: 72px;
@@ -140,10 +186,10 @@
     margin-bottom: 8px;
     cursor: pointer;
   }
-  #list li:hover { border-color: var(--accent); }
+  #list li:hover, #list li:focus { border-color: var(--accent); }
   #list li.active {
     border-color: var(--accent);
-    background: repeating-linear-gradient(-45deg, #fff8f7 0 6px, #ffe7e4 6px 12px);
+    background: repeating-linear-gradient(-45deg, var(--bg) 0 6px, var(--mark) 6px 12px);
     box-shadow: inset 4px 0 0 var(--ink-red);
   }
   #list blockquote {
@@ -155,7 +201,7 @@
     overflow-wrap: anywhere;
   }
   #list p { margin: 0; font-size: 13.5px; overflow-wrap: anywhere; }
-  #list .del {
+  #list .edit, #list .del {
     position: absolute;
     top: 6px;
     right: 6px;
@@ -166,7 +212,24 @@
     font-size: 13px;
     padding: 2px 5px;
   }
-  #list .del:hover { color: #c0392b; }
+  #list .edit {
+    top: 6px;
+    right: 30px;
+    border: none;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+    font: inherit;
+    font-size: 13px;
+    padding: 2px 5px;
+    opacity: 0;
+  }
+  #list li:hover .edit, #list li:focus .edit, #list li:focus-within .edit { opacity: 1; }
+  #list .edit:hover, #list .del:hover { color: var(--accent); }
+  #list .edit-area { width: 100%; min-height: 68px; resize: vertical; }
+  #list .edit-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+  #list .edit-actions button { padding: 4px 9px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: var(--text); cursor: pointer; font: inherit; font-size: 13px; }
+  #list .edit-actions .save { background: var(--accent); border-color: var(--accent); color: #fff; }
   #empty { color: var(--muted); font-size: 13px; }
   aside footer { padding: 14px 16px; border-top: 1px solid var(--border); display: grid; gap: 8px; }
   button.pane-toggle {
@@ -206,7 +269,7 @@
     font: inherit;
     font-size: 13px;
     cursor: pointer;
-    box-shadow: 0 2px 8px rgba(0,0,0,.25);
+    box-shadow: 0 2px 8px var(--shadow);
   }
   #popover {
     position: fixed;
@@ -215,7 +278,7 @@
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 8px;
-    box-shadow: 0 6px 24px rgba(0,0,0,.18);
+    box-shadow: 0 6px 24px var(--shadow);
     padding: 12px;
   }
   #popover blockquote {
@@ -260,6 +323,19 @@
   }
   #done h1 { font-size: 1.3em; margin: 0; }
   #done p { color: var(--muted); margin: 0; }
+  .theme-control { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; color: var(--muted); font-size: 13px; }
+  .theme-control button { padding: 3px 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+  .theme-control button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #theme-error { flex-basis: 100%; color: var(--accent); font-size: 12px; }
+  button:focus-visible, textarea:focus-visible, #list li:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (max-width: 600px) {
+    header { gap: 6px 8px; padding: 8px 12px; }
+    header .hint { flex-basis: 100%; margin-left: 0; order: 2; }
+    .theme-control { order: 3; }
+    .switch { margin-left: 0; order: 4; }
+    button.pane-toggle { margin-left: 0; order: 5; }
+    #doc { padding: 24px 20px 96px; }
+  }
 </style>
 </head>
 <body>
@@ -267,6 +343,13 @@
   <span class="brand">redpen</span>
   <span id="filename"></span>
   <span class="hint" id="hint">Select text, or Shift-click after selecting a word to extend it</span>
+  <div class="theme-control" aria-label="Theme">
+    <span>Theme</span>
+    <button id="theme-auto" type="button" aria-pressed="true">Auto</button>
+    <button id="theme-dark" type="button" aria-pressed="false">Dark</button>
+    <button id="theme-light" type="button" aria-pressed="false">Light</button>
+    <span id="theme-error" role="alert"></span>
+  </div>
   <label class="switch" title="Highlight a paragraph or line on hover; click it to comment">
     <input type="checkbox" id="block-toggle">
     <span class="slider"></span>
@@ -302,7 +385,7 @@
   <textarea id="pop-comment" placeholder="Your comment&hellip;"></textarea>
   <div class="row">
     <button id="pop-cancel">Cancel</button>
-    <button id="pop-save" class="primary">Save</button>
+    <button id="pop-save" class="primary">Save <span id="modifier-hint"></span></button>
   </div>
 </div>
 
@@ -328,13 +411,23 @@ const reviseBtn = document.getElementById('revise');
 const closeBtn = document.getElementById('close-session');
 const paneToggle = document.getElementById('pane-toggle');
 const commentsPane = document.getElementById('comments-pane');
+const modifierHint = document.getElementById('modifier-hint');
+const themeAutoBtn = document.getElementById('theme-auto');
+const themeLightBtn = document.getElementById('theme-light');
+const themeDarkBtn = document.getElementById('theme-dark');
+const themeError = document.getElementById('theme-error');
 
 let annotations = [];
 let nextId = 1;
 let docText = '';
 let pendingRange = null;
 let activeAnnotation = null;
+let editingAnnotation = null;
+let themeGeneration = 0;
+let themeSaveQueue = Promise.resolve();
 
+setupTheme();
+modifierHint.textContent = (navigator.platform || '').toLowerCase().includes('mac') ? '⌘ + Click' : 'Ctrl + Click';
 init();
 
 async function init() {
@@ -399,6 +492,56 @@ function sanitizeHtml(htmlStr) {
 }
 
 paneToggle.addEventListener('click', () => setPaneCollapsed(!commentsPane.hidden));
+
+function setupTheme() {
+  applyTheme('auto');
+  const loadGeneration = themeGeneration;
+  fetch('/settings/theme?t=' + token)
+    .then((res) => res.ok ? res.json() : Promise.reject(new Error('Could not load theme setting.')))
+    .then(({ theme }) => {
+      if (loadGeneration !== themeGeneration) return;
+      applyTheme(['auto', 'light', 'dark'].includes(theme) ? theme : 'auto');
+      renderAnnotationInk();
+    })
+    .catch((error) => {
+      if (loadGeneration === themeGeneration) themeError.textContent = error.message;
+    });
+  for (const [button, theme] of [[themeAutoBtn, 'auto'], [themeLightBtn, 'light'], [themeDarkBtn, 'dark']]) {
+    button.addEventListener('click', () => saveTheme(theme));
+  }
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if (!document.documentElement.dataset.theme) renderAnnotationInk();
+  });
+}
+
+function applyTheme(theme) {
+  if (theme === 'auto') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = theme;
+  themeAutoBtn.setAttribute('aria-pressed', String(theme === 'auto'));
+  themeLightBtn.setAttribute('aria-pressed', String(theme === 'light'));
+  themeDarkBtn.setAttribute('aria-pressed', String(theme === 'dark'));
+}
+
+function saveTheme(theme) {
+  const saveGeneration = ++themeGeneration;
+  applyTheme(theme);
+  renderAnnotationInk();
+  themeError.textContent = '';
+  themeSaveQueue = themeSaveQueue
+    .catch(() => {})
+    .then(async () => {
+      const res = await fetch('/settings/theme?t=' + token, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ theme }),
+      });
+      if (!res.ok) {
+        const result = await res.json().catch(() => ({}));
+        throw new Error(result.error || 'Could not save theme setting.');
+      }
+    })
+    .catch((error) => {
+      if (saveGeneration === themeGeneration) themeError.textContent = error.message;
+    });
+}
 
 function restorePaneState() {
   try {
@@ -842,26 +985,79 @@ function updateSidebar() {
   listEl.innerHTML = '';
   for (const a of annotations) {
     const li = document.createElement('li');
+    li.tabIndex = 0;
     if (a === activeAnnotation) li.classList.add('active');
     const del = document.createElement('button');
     del.className = 'del';
     del.textContent = '✕';
     del.title = 'Remove annotation';
+    del.setAttribute('aria-label', 'Remove annotation');
     del.addEventListener('click', (e) => {
       e.stopPropagation();
       const wasActive = activeAnnotation === a;
       annotations = annotations.filter((x) => x !== a);
+      if (editingAnnotation === a) editingAnnotation = null;
       if (wasActive) activeAnnotation = annotations[0] || null;
       refreshHighlights();
       updateSidebar();
       persistDraft();
     });
+    const edit = document.createElement('button');
+    edit.className = 'edit';
+    edit.textContent = 'Edit';
+    edit.addEventListener('click', (e) => {
+      e.stopPropagation();
+      activeAnnotation = a;
+      editingAnnotation = a;
+      refreshHighlights();
+      updateSidebar();
+      scrollToRange(a.range);
+      requestAnimationFrame(() => listEl.querySelector('.edit-area')?.focus());
+    });
     const q = document.createElement('blockquote');
     q.textContent = a.quote.length > 140 ? a.quote.slice(0, 140) + '…' : a.quote;
-    const c = document.createElement('p');
-    c.textContent = a.comment;
     li.addEventListener('click', () => openAnnotation(a));
-    li.append(del, q, c);
+    li.addEventListener('keydown', (e) => {
+      if (e.target !== li || (e.key !== 'Enter' && e.key !== ' ')) return;
+      e.preventDefault();
+      openAnnotation(a);
+    });
+    if (editingAnnotation === a) {
+      const input = document.createElement('textarea');
+      input.className = 'edit-area';
+      input.value = a.comment;
+      input.setAttribute('aria-label', 'Edit annotation comment');
+      input.addEventListener('click', (e) => e.stopPropagation());
+      const actions = document.createElement('div');
+      actions.className = 'edit-actions';
+      const save = document.createElement('button');
+      save.className = 'save';
+      save.textContent = 'Save';
+      save.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const comment = input.value.trim();
+        if (!comment) return input.focus();
+        a.comment = comment;
+        editingAnnotation = null;
+        activeAnnotation = a;
+        refreshHighlights();
+        updateSidebar();
+        persistDraft();
+      });
+      const cancel = document.createElement('button');
+      cancel.textContent = 'Cancel';
+      cancel.addEventListener('click', (e) => {
+        e.stopPropagation();
+        editingAnnotation = null;
+        updateSidebar();
+      });
+      actions.append(save, cancel);
+      li.append(edit, del, q, input, actions);
+    } else {
+      const c = document.createElement('p');
+      c.textContent = a.comment;
+      li.append(edit, del, q, c);
+    }
     listEl.appendChild(li);
   }
   countEl.textContent = annotations.length ? '(' + annotations.length + ')' : '';
@@ -924,7 +1120,11 @@ function configureInkLayer(layer, width, height) {
   layer.style.height = height + 'px';
 }
 
-function appendAnnotationBand(x, y, width, height, fill = '#ffd2cd', opacity = '.72') {
+function themeColor(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function appendAnnotationBand(x, y, width, height, fill = themeColor('--active-band'), opacity = '.72') {
   const band = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
   band.setAttribute('x', Math.max(0, x - 2));
   band.setAttribute('y', Math.max(0, y + 2));
@@ -937,11 +1137,11 @@ function appendAnnotationBand(x, y, width, height, fill = '#ffd2cd', opacity = '
 }
 
 function appendHoverBand(range, wrapRect, maxWidth) {
-  appendRangeBand(range, wrapRect, maxWidth, '#ffe5e2', '.9');
+  appendRangeBand(range, wrapRect, maxWidth, themeColor('--hover-mark'), '.9');
 }
 
 function appendPendingBand(range, wrapRect, maxWidth) {
-  appendRangeBand(range, wrapRect, maxWidth, '#ffbcb8', '.88');
+  appendRangeBand(range, wrapRect, maxWidth, themeColor('--pending-mark'), '.88');
 }
 
 function appendRangeBand(range, wrapRect, maxWidth, fill, opacity) {
@@ -958,7 +1158,7 @@ function appendInkLine(x, y, width, annotationId, lineIndex, active) {
   const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
   line.setAttribute('d', inkPath(x, y, width, annotationId * 11 + lineIndex * 7));
   line.setAttribute('fill', 'none');
-  line.setAttribute('stroke', active ? '#9e1520' : '#c6202c');
+  line.setAttribute('stroke', active ? themeColor('--ink-red-dark') : themeColor('--ink-red'));
   line.setAttribute('stroke-width', active ? '2.8' : '2.25');
   line.setAttribute('stroke-linecap', 'round');
   line.setAttribute('stroke-linejoin', 'round');

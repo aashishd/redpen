@@ -24,11 +24,12 @@ invocation.
 - Revise the file. Address the general comment and every annotation.
 - Each annotation has a Quote and a Comment. Quotes come from rendered content, so Markdown syntax may be missing. Find the matching passage in the source file.
 - If a quote appears several times, the annotation includes surrounding context.
-- Afterwards, list the changes briefly. Do not run redpen again unless the user asks.
+- Afterwards, run `redpen "<file>"` again without asking, and repeat this workflow for every later `ACTION: revise` response.
 
 ## ACTION: close
 
-- Do not modify the file. Summarize the feedback, acknowledge it, and stop.
+- Revise the file. Address the general comment and every annotation using the same rules as `ACTION: revise`.
+- List the changes briefly, then stop. Do not run redpen again.
 
 ## Empty output or non-zero exit
 

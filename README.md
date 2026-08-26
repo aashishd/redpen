@@ -32,17 +32,17 @@ other active or externally loaded content.
 This starts a one-shot server on a random localhost port, opens the file in
 your browser, and blocks. In the browser you can:
 
-- select text and attach an inline comment to it,
+- select text and attach an inline comment to it; the Save button shows the platform modifier-click shortcut hint,
 - see each saved annotation marked with a hand-drawn red underline,
-- click an annotation to focus it with a red pen band,
+- click an annotation to focus it with a red pen band, or edit its comment inline from the comments pane,
+- choose **Auto**, **Dark**, or **Light** in the header; Auto follows your operating-system setting,
 - or turn on **Hover select** in the header: hovering marks a paragraph (or a
   line in plain-text files) and clicking it opens the comment box,
 - write one general comment on the whole document,
 - hide and reopen the comments pane from the header; its state survives reloads in the same browser tab,
 - finish with one of two buttons:
-  - **Submit Feedback & Revise**: the agent should update the document.
-  - **Submit Feedback & Close**: the agent should acknowledge the feedback and
-    stop.
+  - **Submit Feedback & Revise**: the agent should apply all feedback, then open RedPen on the same file again. This repeats for later revise submissions.
+  - **Submit Feedback & Close**: the agent should apply all feedback, report the changes, and stop without reopening RedPen.
 
 On submit, the process prints a report to stdout and exits:
 
@@ -69,6 +69,12 @@ the user's comment
 
 Status messages go to stderr. Stdout carries only the report.
 
+The theme choice is shared by future RedPen sessions. Set `XDG_CONFIG_HOME` to
+store it in `$XDG_CONFIG_HOME/redpen/settings.json` on any platform. Without
+that override, RedPen uses `~/Library/Application Support/redpen/settings.json`
+on macOS, `%APPDATA%\redpen\settings.json` on Windows, or
+`~/.config/redpen/settings.json` on other systems.
+
 Options: `--out <file>` also writes the report to a file, `--port <n>` fixes
 the port, and `--no-open` prints the URL without opening a browser.
 
@@ -90,7 +96,8 @@ redpen uninstall all
 | gemini | `~/.gemini/commands/redpen.toml` |
 
 The command tells the agent to run `redpen <file>`, wait for it to exit, and
-act on the `ACTION:` line. Templates prefer RedPen for requests to add inline
+act on the `ACTION:` line. `revise` repeats the review loop after applying the
+feedback. `close` applies the feedback and ends the loop. Templates prefer RedPen for requests to add inline
 comments or annotations to a supported document, including “redpen it”, “red
 pen it”, “red-pen it”, “annotate this document”, and “add comments to this
 document”. They do not use it for general reading, summarization, proofreading,
