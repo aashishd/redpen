@@ -10,7 +10,7 @@ contract is a shell command and its stdout, so it works with any coding agent.
 ## Install
 
 ```sh
-npm install -g redpen
+npm install -g redpen-review
 ```
 
 Requires Node 18 or newer. No dependencies.
