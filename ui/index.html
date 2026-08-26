@@ -24,6 +24,7 @@
     --active-band: #ffd2cd;
     --selection-text: #5a1014;
     --selection-bg: #ffcbc7;
+    --active-glow: rgba(198,32,44,.42);
     --shadow: rgba(0,0,0,.18);
     --pen-cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 32 32'%3E%3Cpath fill='%23c6202c' d='m5 27 3.2-9.2L23.6 2.4l6 6L14.2 23.8z'/%3E%3Cpath fill='%2367181d' d='m5 27 7.4-3.2-4.2-4.2z'/%3E%3Cpath fill='%23fff4e8' d='m23.6 2.4 2-2 6 6-2 2z'/%3E%3C/svg%3E") 4 24;
   }
@@ -46,6 +47,7 @@
     --active-band: #613236;
     --selection-text: #fff5f5;
     --selection-bg: #803b40;
+    --active-glow: rgba(250,98,104,.5);
     --shadow: rgba(0,0,0,.5);
   }
   @media (prefers-color-scheme: dark) {
@@ -54,7 +56,7 @@
       --ink-red: #fa6268; --ink-red-dark: #ff8589; --bg: #21191a; --bg-soft: #2d2224;
       --text: #f8ebeb; --mark: #4b292b; --active-mark: #653438; --pending-mark: #74383b;
       --hover-mark: #44282a; --active-band: #613236; --selection-text: #fff5f5;
-      --selection-bg: #803b40; --shadow: rgba(0,0,0,.5);
+      --selection-bg: #803b40; --active-glow: rgba(250,98,104,.5); --shadow: rgba(0,0,0,.5);
     }
   }
   * { box-sizing: border-box; }
@@ -225,9 +227,9 @@
   }
   #list li:hover, #list li:focus { border-color: var(--accent); }
   #list li.active {
-    border-color: var(--accent);
-    background: repeating-linear-gradient(-45deg, var(--bg) 0 6px, var(--mark) 6px 12px);
-    box-shadow: inset 4px 0 0 var(--ink-red);
+    border-color: var(--ink-red-dark);
+    background: var(--bg);
+    box-shadow: 0 0 0 1px var(--ink-red-dark), 0 0 12px 3px var(--active-glow);
   }
   #list blockquote {
     margin: 0 18px 6px 0;
@@ -452,6 +454,8 @@ let docText = '';
 let pendingRange = null;
 let activeAnnotation = null;
 let editingAnnotation = null;
+let commentRailPositions = new Map();
+let commentRailPositionsDirty = true;
 let themeGeneration = 0;
 let themeSaveQueue = Promise.resolve();
 
@@ -709,6 +713,10 @@ function setPaneCollapsed(collapsed, persist = true) {
 
 // ---- selection -> "Add comment" button ----
 
+document.addEventListener('pointerdown', clearActiveAnnotation, true);
+document.addEventListener('selectionchange', () => {
+  if (selectedDocumentRange()) clearActiveAnnotation();
+});
 document.addEventListener('mouseup', (e) => {
   if (popover.contains(e.target) || addBtn.contains(e.target)) return;
   setTimeout(maybeShowAddButton, 0);
@@ -718,7 +726,14 @@ docWrap.addEventListener('scroll', () => {
   renderAnnotationInk();
 });
 docEl.addEventListener('scroll', renderAnnotationInk, true);
-window.addEventListener('resize', renderAnnotationInk);
+commentsPane.addEventListener('scroll', () => {
+  commentRailPositionsDirty = true;
+  renderAnnotationInk();
+}, true);
+window.addEventListener('resize', () => {
+  commentRailPositionsDirty = true;
+  renderAnnotationInk();
+});
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     closePopover();
@@ -870,6 +885,13 @@ function selectedDocumentRange() {
   const range = selection.getRangeAt(0);
   if (!docEl.contains(range.commonAncestorContainer) || !range.toString().trim()) return null;
   return range.cloneRange();
+}
+
+function clearActiveAnnotation() {
+  if (!activeAnnotation) return;
+  activeAnnotation = null;
+  listEl.querySelectorAll('li.active').forEach((item) => item.classList.remove('active'));
+  refreshHighlights();
 }
 
 function wordRangeAtPoint(x, y) {
@@ -1148,6 +1170,7 @@ function updateSidebar() {
     edit.textContent = 'Edit';
     edit.addEventListener('click', (e) => {
       e.stopPropagation();
+      clearDocumentSelection();
       activeAnnotation = a;
       editingAnnotation = a;
       refreshHighlights();
@@ -1204,15 +1227,25 @@ function updateSidebar() {
   countEl.textContent = annotations.length ? '(' + annotations.length + ')' : '';
   emptyEl.hidden = annotations.length > 0;
   updateButtons();
+  commentRailPositionsDirty = true;
+  requestAnimationFrame(renderAnnotationInk);
 }
 
 function openAnnotation(annotation) {
+  clearDocumentSelection();
   if (activeAnnotation !== annotation) {
     activeAnnotation = annotation;
     refreshHighlights();
     updateSidebar();
   }
   scrollToRange(annotation.range);
+}
+
+function clearDocumentSelection() {
+  getSelection()?.removeAllRanges();
+  pendingRange = null;
+  hideAddButton();
+  refreshPendingHighlight();
 }
 
 function scrollToRange(range) {
@@ -1264,20 +1297,46 @@ function renderCommentRailBands() {
   commentRailBands.setAttribute('viewBox', `0 0 ${width} ${height}`);
   commentRailBands.setAttribute('width', width);
   commentRailBands.setAttribute('height', height);
-  const wrapRect = docWrap.getBoundingClientRect();
-  const documentHeight = Math.max(docWrap.scrollHeight, docEl.offsetHeight, 1);
+  if (!commentsPane.hidden || commentRailPositionsDirty) {
+    updateCommentRailPositions(height);
+  }
   for (const annotation of annotations) {
-    const seen = new Set();
-    for (const rect of annotation.range.getClientRects()) {
-      if (rect.width <= 2 || rect.height <= 2) continue;
-      const documentY = rect.top - wrapRect.top + docWrap.scrollTop;
-      const normalizedY = clamp(documentY / documentHeight, 0, 1);
-      const key = `${Math.round(normalizedY * height)}:${Math.round(rect.height)}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
+    const normalizedY = commentRailPositions.get(annotation.id);
+    if (normalizedY !== undefined) {
       appendCommentRailBand(normalizedY, annotation, width, height);
     }
   }
+}
+
+function updateCommentRailPositions(height) {
+  const railRect = commentRailBands.getBoundingClientRect();
+  const wasHidden = commentsPane.hidden;
+  const previousStyle = commentsPane.getAttribute('style');
+  if (wasHidden) {
+    commentsPane.hidden = false;
+    Object.assign(commentsPane.style, {
+      position: 'fixed',
+      top: railRect.top + 'px',
+      right: '0',
+      height: railRect.height + 'px',
+      visibility: 'hidden',
+      pointerEvents: 'none',
+    });
+  }
+  const items = [...listEl.children];
+  commentRailPositions = new Map();
+  annotations.forEach((annotation, index) => {
+    const item = items[index];
+    if (!item) return;
+    const itemY = item.getBoundingClientRect().top - railRect.top;
+    commentRailPositions.set(annotation.id, clamp((itemY + 2) / height, 0, 1));
+  });
+  if (wasHidden) {
+    commentsPane.hidden = true;
+    if (previousStyle === null) commentsPane.removeAttribute('style');
+    else commentsPane.setAttribute('style', previousStyle);
+  }
+  commentRailPositionsDirty = false;
 }
 
 function appendCommentRailBand(normalizedY, annotation, width, height) {
