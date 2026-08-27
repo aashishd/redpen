@@ -44,13 +44,20 @@ error message.
 
 HTML is rendered as sanitized static content. RedPen removes scripts, styles,
 frames, embeds, forms and controls, SVG, MathML, URL-bearing attributes, and
-other active or externally loaded content.
+other active or externally loaded content. Markdown and HTML may include local
+PNG, JPEG, GIF, WebP, AVIF, or SVG images only when they use a relative path in
+the reviewed document's real directory or a subdirectory. Absolute paths,
+traversal, encoded paths, symlink escapes, remote/data/file URLs, and `srcset`
+are blocked. Raster files are checked by extension and signature before a
+short-lived tokenized route serves them. SVG is served to the app as text,
+strictly sanitized, and displayed from a blob image; it cannot load external
+resources or run active SVG content.
 
 This starts a one-shot server on a random localhost port, opens the file in
 your browser, and blocks. Mermaid is served from that same local server. It has
 no CDN, runtime fetch, or external network request. In the browser you can:
 
-- select text and attach an inline comment to it; Save shows `Save (⌘ + Click)` on macOS or `Save (Ctrl + Click)` elsewhere,
+- select text and attach an inline comment to it; Save shows `Save (⌘ + ↵)` on macOS or `Save (⌃ + ↵)` elsewhere,
 - see each saved annotation marked with a hand-drawn red underline,
 - click an annotation to focus it with a red pen band, or edit its comment inline from the comments pane,
 - collapse comments with the `>` button on the document divider; the narrow `<` rail keeps clickable red annotation positions and survives reloads in the same browser tab,

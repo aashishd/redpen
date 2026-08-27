@@ -6,9 +6,10 @@
 
 import { createServer } from 'node:http';
 import {
-  existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync,
+  closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readSync, readdirSync,
+  readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
-import { basename, dirname, extname, join, resolve } from 'node:path';
+import { basename, dirname, extname, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -21,6 +22,11 @@ const HTML_EXTS = ['.html', '.htm'];
 const TEXT_EXTS = ['.txt'];
 const ACCEPTED_FORMATS = '.txt, .md, .markdown, .html, .htm, or an extensionless UTF-8 text file';
 const SETTINGS_FILE = settingsFile();
+const IMAGE_TYPES = new Map([
+  ['.png', 'image/png'], ['.jpg', 'image/jpeg'], ['.jpeg', 'image/jpeg'],
+  ['.gif', 'image/gif'], ['.webp', 'image/webp'], ['.avif', 'image/avif'], ['.svg', 'text/plain; charset=utf-8'],
+]);
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
 const AGENTS = {
   claude: {
@@ -128,22 +134,30 @@ function serve(args) {
   }
   const rendering = MARKDOWN_EXTS.includes(extension) ? 'markdown'
     : HTML_EXTS.includes(extension) ? 'html' : 'plain';
+  let assetRoot;
+  try {
+    // Asset access is rooted at the document's real directory, not a path that
+    // happens to contain a symlink to it.
+    assetRoot = dirname(realpathSync(filePath));
+  } catch (error) {
+    fail(`cannot resolve document directory: ${error.message}`);
+  }
   const token = randomBytes(16).toString('hex');
-  const html = readFileSync(join(PKG_ROOT, 'ui', 'index.html'), 'utf8');
+  const html = readFileSync(join(PKG_ROOT, 'ui', 'index.html'), 'utf8').replaceAll('__REDPEN_TOKEN__', token);
   const markedJs = readFileSync(join(PKG_ROOT, 'ui', 'marked.min.js'), 'utf8');
   const mermaidJs = readFileSync(join(PKG_ROOT, 'ui', 'mermaid.min.js'), 'utf8');
 
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
-    if (url.pathname === '/marked.min.js') {
+    // Do not accept a token mixed with additional query parameters.
+    if (url.search !== `?t=${token}`) return send(res, 403, 'text/plain', 'forbidden');
+    if (req.method === 'GET' && url.pathname === '/marked.min.js') {
       return send(res, 200, 'text/javascript; charset=utf-8', markedJs);
     }
-    if (url.pathname === '/mermaid.min.js') {
+    if (req.method === 'GET' && url.pathname === '/mermaid.min.js') {
       return send(res, 200, 'text/javascript; charset=utf-8', mermaidJs);
     }
-    if (url.searchParams.get('t') !== token) {
-      return send(res, 403, 'text/plain', 'forbidden');
-    }
+    if (url.pathname.startsWith('/asset/')) return handleAsset(req, res, url, assetRoot);
     if (req.method === 'GET' && url.pathname === '/') {
       return send(res, 200, 'text/html; charset=utf-8', html);
     }
@@ -242,9 +256,102 @@ function writeThemeSetting(theme) {
   }
 }
 
-function send(res, status, type, body) {
-  res.writeHead(status, { 'content-type': type });
+function send(res, status, type, body, headers = {}) {
+  res.writeHead(status, {
+    'content-type': type,
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+    // The app is intentionally self-contained: only bundled scripts, its own
+    // tokenized endpoints, and sanitized blob images may load.
+    'content-security-policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'; media-src 'none'; form-action 'none'",
+    'referrer-policy': 'no-referrer',
+    ...headers,
+  });
   res.end(body);
+}
+
+function handleAsset(req, res, url, root) {
+  if (req.method !== 'GET') return send(res, 405, 'text/plain', 'method not allowed', { allow: 'GET' });
+  const encoded = url.pathname.slice('/asset/'.length);
+  let localPath;
+  try {
+    localPath = decodeURIComponent(encoded);
+  } catch {
+    return send(res, 400, 'text/plain', 'bad asset path');
+  }
+  // A canonical single encoding prevents decoder differentials and double
+  // encoded traversal forms from reaching filesystem resolution.
+  if (encodeURIComponent(localPath) !== encoded || !isSafeImagePath(localPath)) {
+    return send(res, 404, 'text/plain', 'not found');
+  }
+  const type = IMAGE_TYPES.get(extname(localPath).toLowerCase());
+  let fd;
+  try {
+    const candidate = resolve(root, localPath);
+    const target = realpathSync(candidate);
+    if (!isContainedAsset(root, target)) return send(res, 404, 'text/plain', 'not found');
+    // Open the resolved object once. O_NOFOLLOW prevents a final-component
+    // swap on platforms that support it; the post-open identity check below
+    // also protects the portable fallback.
+    fd = openSync(target, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    const descriptorStat = fstatSync(fd);
+    if (!descriptorStat.isFile() || descriptorStat.size > MAX_IMAGE_BYTES) return send(res, 404, 'text/plain', 'not found');
+    const postOpenTarget = realpathSync(candidate);
+    if (!isContainedAsset(root, postOpenTarget)) return send(res, 404, 'text/plain', 'not found');
+    const pathStat = statSync(postOpenTarget);
+    if (!pathStat.isFile() || pathStat.dev !== descriptorStat.dev || pathStat.ino !== descriptorStat.ino) {
+      return send(res, 404, 'text/plain', 'not found');
+    }
+    const bytes = readOpenFile(fd, descriptorStat.size);
+    if (type !== 'text/plain; charset=utf-8' && !hasImageMagic(bytes, localPath)) {
+      return send(res, 404, 'text/plain', 'not found');
+    }
+    return send(res, 200, type, bytes);
+  } catch {
+    return send(res, 404, 'text/plain', 'not found');
+  } finally {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* Descriptor is already unusable. */ }
+    }
+  }
+}
+
+function isContainedAsset(root, target) {
+  const pathFromRoot = relative(root, target);
+  return pathFromRoot !== '' && !pathFromRoot.startsWith('..') && resolve(root, pathFromRoot) === target;
+}
+
+function readOpenFile(fd, size) {
+  const bytes = Buffer.allocUnsafe(size);
+  let offset = 0;
+  while (offset < bytes.length) {
+    const count = readSync(fd, bytes, offset, bytes.length - offset, offset);
+    if (count === 0) throw new Error('asset changed while reading');
+    offset += count;
+  }
+  return bytes;
+}
+
+function isSafeImagePath(value) {
+  if (!value || value.length > 1024 || /[%\\\u0000-\u001f\u007f-\u009f]/.test(value)
+    || value.startsWith('/') || value.startsWith('//') || /^[a-z][a-z\d+.-]*:/i.test(value)) return false;
+  const parts = value.split('/');
+  return parts.every((part) => part && part !== '.' && part !== '..')
+    && IMAGE_TYPES.has(extname(value).toLowerCase());
+}
+
+function hasImageMagic(bytes, sourcePath) {
+  const ext = extname(sourcePath).toLowerCase();
+  if (ext === '.png') return bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  if (ext === '.jpg' || ext === '.jpeg') return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  if (ext === '.gif') return bytes.length >= 6 && (bytes.subarray(0, 6).toString() === 'GIF87a' || bytes.subarray(0, 6).toString() === 'GIF89a');
+  if (ext === '.webp') return bytes.length >= 12 && bytes.subarray(0, 4).toString() === 'RIFF' && bytes.subarray(8, 12).toString() === 'WEBP';
+  if (ext === '.avif') {
+    if (bytes.length < 16 || bytes.subarray(4, 8).toString() !== 'ftyp') return false;
+    const brands = bytes.subarray(8, Math.min(bytes.length, 64)).toString('ascii');
+    return /avif|avis/.test(brands);
+  }
+  return false;
 }
 
 function openBrowser(url) {
