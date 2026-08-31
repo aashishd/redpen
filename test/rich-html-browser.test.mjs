@@ -98,6 +98,7 @@ test('rich HTML remains safe and reviewable in Chrome', { timeout: 90000 }, asyn
   await waitFor(() => value('document.querySelectorAll("#comment-rail-bands rect").length === 1'));
   assert.deepEqual(await value('[document.querySelectorAll("#ink-layer rect[data-annotation-id]").length, document.querySelectorAll("#comment-rail-bands rect").length]'), [1, 1]);
   assert.equal(await value('document.querySelector("#list .element-context").textContent.includes("body #semantic-target")'), true);
+  assert.deepEqual(await value('(() => { const item=document.querySelector("#list li"), edit=item.querySelector(".edit"), close=item.querySelector(".del"), quote=item.querySelector("blockquote"), er=edit.getBoundingClientRect(), cr=close.getBoundingClientRect(), qr=quote.getBoundingClientRect(), style=getComputedStyle(edit); return [style.opacity, er.right <= cr.left, Math.abs(er.top-cr.top) <= 1, er.bottom < qr.top, parseFloat(getComputedStyle(item).paddingTop) >= er.height + 8] })()'), ['1', true, true, true, true]);
   const savedContext = await value('(() => { const key=Array.from({length:sessionStorage.length},(_,index)=>sessionStorage.key(index)).find((item)=>item.startsWith("redpen-draft:")); const raw=sessionStorage.getItem(key); return [raw, JSON.parse(raw).annotations[0].context]; })()');
   assert.equal(savedContext[1].tag, 'h2');
   assert.match(savedContext[1].selector, /body #semantic-target/);
