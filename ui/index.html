@@ -137,6 +137,8 @@
   #doc, #doc * { cursor: var(--pen-cursor), text; }
   #doc a, #doc a * { cursor: pointer; }
   .block-hover { background: var(--hover-mark); outline: 1px solid var(--accent); border-radius: 4px; }
+  #pop-target { margin: 0 0 6px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  #pop-target[hidden] { display: none; }
 
   .switch {
     display: inline-flex;
@@ -250,6 +252,7 @@
     overflow-wrap: anywhere;
   }
   #list p { margin: 0; font-size: 13.5px; overflow-wrap: anywhere; }
+  #list .element-context { margin: 0 0 6px; color: var(--muted); font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
   #list .edit, #list .del {
     position: absolute;
     top: 6px;
@@ -387,7 +390,7 @@
     <button id="theme-light" type="button" aria-pressed="false">Light</button>
     <span id="theme-error" role="alert"></span>
   </div>
-  <label class="switch" title="Highlight a paragraph or line on hover; click it to comment">
+  <label class="switch" title="Highlight a review target on hover; click it to comment">
     <input type="checkbox" id="block-toggle">
     <span class="slider"></span>
     Hover select
@@ -421,6 +424,7 @@
 </main>
 <button id="add-btn" hidden>&#128172; Add comment</button>
 <div id="popover" hidden>
+  <p id="pop-target" hidden></p>
   <blockquote id="pop-quote"></blockquote>
   <textarea id="pop-comment" placeholder="Your comment&hellip;"></textarea>
   <div class="row">
@@ -443,6 +447,7 @@ const inkLayer = document.getElementById('ink-layer');
 const addBtn = document.getElementById('add-btn');
 const popover = document.getElementById('popover');
 const popQuote = document.getElementById('pop-quote');
+const popTarget = document.getElementById('pop-target');
 const popComment = document.getElementById('pop-comment');
 const generalEl = document.getElementById('general');
 const listEl = document.getElementById('list');
@@ -462,6 +467,7 @@ let annotations = [];
 let nextId = 1;
 let docText = '';
 let pendingRange = null;
+let pendingElement = null;
 let activeAnnotation = null;
 let editingAnnotation = null;
 let commentRailPositions = new Map();
@@ -520,6 +526,7 @@ async function init() {
     await renderLocalSvgImages();
   }
   restorePaneState();
+  if (richMode) setHoverSelect(true, false);
   const resizeObserver = new ResizeObserver(() => requestAnimationFrame(renderAnnotationInk));
   resizeObserver.observe(docEl);
   if (richFrame) resizeObserver.observe(richFrame);
@@ -756,6 +763,139 @@ function safeLocalSvgStyle(value) {
 const SAFE_LOCAL_SVG_ELEMENTS = new Set(['svg', 'g', 'defs', 'symbol', 'use', 'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'text', 'tspan', 'title', 'desc', 'lineargradient', 'radialgradient', 'stop', 'clippath', 'mask']);
 const MAX_LOCAL_SVG_ELEMENTS = 10000;
 
+const ELEMENT_TEXT_LIMIT = 500;
+const ELEMENT_HTML_LIMIT = 1200;
+const ELEMENT_SELECTOR_LIMIT = 800;
+const ELEMENT_CLASS_LIMIT = 8;
+const PICKER_EXCLUDED = new Set(['html', 'head', 'body', 'script', 'style', 'template', 'meta', 'link', 'title', 'base', 'noscript', 'slot', 'br', 'wbr']);
+const CONTEXT_EXCLUDED = new Set(['script', 'style', 'template', 'meta', 'link', 'title', 'base', 'noscript', 'textarea', 'option', 'optgroup']);
+
+function boundedText(value, limit) {
+  return String(value || '').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, limit);
+}
+function isRedpenValue(value) {
+  return /(?:token|nonce|session|secret|password|authorization)/i.test(String(value || ''));
+}
+function safeContextValue(value, limit = 160) {
+  const text = boundedText(value, limit);
+  return !text || isRedpenValue(text) ? '' : text;
+}
+function internalReviewClass(name) {
+  return name === 'block-hover' || name === 'image-placeholder';
+}
+function internalReviewNode(element) {
+  return element.hasAttribute('data-redpen-warning') || element.classList.contains('image-placeholder');
+}
+function renderedReviewElement(element) {
+  if (!element || element.nodeType !== Node.ELEMENT_NODE || !reviewRoot.contains(element)) return false;
+  for (let node = element; node; node = node.parentElement) {
+    if (node.hasAttribute('hidden') || node.hasAttribute('inert') || node.getAttribute('aria-hidden') === 'true') return false;
+    const style = reviewWindow.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse'
+      || style.contentVisibility === 'hidden' || Number(style.opacity) === 0) return false;
+    if (node === reviewRoot) break;
+  }
+  return element.getClientRects().length > 0;
+}
+function visibleReviewElement(element) {
+  if (!renderedReviewElement(element)) return false;
+  for (let node = element; node && node !== reviewRoot; node = node.parentElement) {
+    if (PICKER_EXCLUDED.has(node.localName) || internalReviewNode(node)) return false;
+  }
+  return true;
+}
+function contextElementRetained(element) {
+  return !CONTEXT_EXCLUDED.has(element.localName) && !internalReviewNode(element) && renderedReviewElement(element);
+}
+function pickReviewElement(node) {
+  let element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+  if (!element) return null;
+  const svg = element.closest?.('svg');
+  if (svg && reviewRoot.contains(svg)) element = svg;
+  while (element && element !== reviewRoot) {
+    if (visibleReviewElement(element)) return element;
+    element = element.parentElement;
+  }
+  return null;
+}
+function visibleElementText(element) {
+  const walker = element.ownerDocument.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+  const pieces = [];
+  let node;
+  while ((node = walker.nextNode())) {
+    const parent = node.parentElement;
+    if (parent && parent.localName !== 'input' && parent.localName !== 'select' && contextElementRetained(parent)) pieces.push(node.data);
+  }
+  return boundedText(pieces.join(' '), ELEMENT_TEXT_LIMIT);
+}
+function contextClasses(element) {
+  return [...element.classList].map((name) => safeContextValue(name, 80))
+    .filter((name) => name && !internalReviewClass(name)).slice(0, ELEMENT_CLASS_LIMIT);
+}
+function stableElementId(element) {
+  const id = safeContextValue(element.id, 120);
+  return id && element.ownerDocument.querySelectorAll('#' + CSS.escape(id)).length === 1 ? id : '';
+}
+function elementSelector(element) {
+  const id = stableElementId(element);
+  if (id) return 'body #' + CSS.escape(id);
+  const parts = [];
+  for (let node = element; node && node !== reviewRoot; node = node.parentElement) {
+    let index = 1;
+    for (let sibling = node.previousElementSibling; sibling; sibling = sibling.previousElementSibling) {
+      if (sibling.localName === node.localName) index++;
+    }
+    parts.unshift(node.localName + ':nth-of-type(' + index + ')');
+  }
+  return ('body > ' + parts.join(' > ')).slice(0, ELEMENT_SELECTOR_LIMIT);
+}
+function sanitizedHtmlExcerpt(element) {
+  if (!contextElementRetained(element)) return '';
+  const clone = element.cloneNode(true);
+  const originals = [element, ...element.querySelectorAll('*')];
+  const clones = [clone, ...clone.querySelectorAll('*')];
+  for (let index = 0; index < originals.length; index++) {
+    const original = originals[index];
+    const copy = clones[index];
+    if (!contextElementRetained(original)) {
+      copy.remove();
+      continue;
+    }
+    const values = {
+      id: stableElementId(original),
+      class: contextClasses(original).join(' '),
+      role: safeContextValue(original.getAttribute('role'), 80),
+      'aria-label': safeContextValue(original.getAttribute('aria-label'), 160),
+      alt: safeContextValue(original.getAttribute('alt'), 160),
+      type: safeContextValue(original.getAttribute('type'), 40),
+    };
+    for (const attribute of [...copy.attributes]) copy.removeAttribute(attribute.name);
+    for (const [name, value] of Object.entries(values)) if (value) copy.setAttribute(name, value);
+  }
+  return String(clone.outerHTML || '').slice(0, ELEMENT_HTML_LIMIT);
+}
+function describeElement(element) {
+  const tag = element.localName.toLowerCase();
+  const classes = contextClasses(element);
+  const id = stableElementId(element);
+  const role = safeContextValue(element.getAttribute('role'), 80);
+  const text = visibleElementText(element);
+  return { targetType: 'element', selector: elementSelector(element), tag, role, id, classes, text, html: sanitizedHtmlExcerpt(element) };
+}
+function elementLabel(context) {
+  const parts = [context.tag || 'element'];
+  if (context.id) parts.push('#' + context.id);
+  if (context.role) parts.push('[' + context.role + ']');
+  if (context.text) parts.push('“' + context.text.slice(0, 80) + (context.text.length > 80 ? '…' : '') + '”');
+  return parts.join(' ');
+}
+function elementFingerprintMatches(element, context) {
+  return visibleReviewElement(element) && element.localName.toLowerCase() === context.tag
+    && stableElementId(element) === (context.id || '')
+    && visibleElementText(element) === (context.text || '')
+    && contextClasses(element).join('\u0001') === (context.classes || []).join('\u0001');
+}
+
 function sanitizeLocalSvg(markup) {
   if (markup.length > 5 * 1024 * 1024) return null;
   const parsed = new DOMParser().parseFromString(markup, 'image/svg+xml');
@@ -860,6 +1000,7 @@ async function renderRichHtml(htmlStr) {
   }, true);
   reviewRoot.addEventListener('submit', (event) => event.preventDefault());
   reviewRoot.addEventListener('click', (event) => {
+    if (blockMode) return;
     const link = event.target.closest?.('a[href^="#"],area[href^="#"]');
     if (link) { event.preventDefault(); reviewRoot.ownerDocument.getElementById(link.getAttribute('href').slice(1))?.scrollIntoView({ block: 'center' }); }
   });
@@ -867,11 +1008,11 @@ async function renderRichHtml(htmlStr) {
   reviewRoot.addEventListener('pointerdown', clearActiveAnnotation, true);
   reviewRoot.addEventListener('mousemove', (event) => {
     if (!blockMode || !popover.hidden) return;
-    const block = event.target.closest?.(BLOCK_SELECTOR);
-    if (!block || !reviewRoot.contains(block)) return clearHover();
+    const element = pickReviewElement(event.target);
+    if (!element) return clearHover();
     clearLineHover();
-    if (hoverBlock === block) return;
-    clearBlockHover(); hoverBlock = block; block.classList.add('block-hover');
+    if (hoverBlock === element) return;
+    clearBlockHover(); hoverBlock = element; element.classList.add('block-hover');
   });
   reviewRoot.addEventListener('mouseleave', clearHover);
   reviewRoot.addEventListener('mouseup', () => setTimeout(maybeShowAddButton, 0));
@@ -882,15 +1023,20 @@ async function renderRichHtml(htmlStr) {
     const first = selectedDocumentRange(); const second = wordRangeAtPoint(event.clientX, event.clientY);
     if (!first || !second) return;
     event.preventDefault(); const range = rangeBetween(first, second); const selection = reviewSelection();
-    selection.removeAllRanges(); selection.addRange(range); pendingRange = range.cloneRange(); setTimeout(maybeShowAddButton, 0);
+    selection.removeAllRanges(); selection.addRange(range); pendingRange = range.cloneRange(); pendingElement = null; setTimeout(maybeShowAddButton, 0);
   });
   reviewRoot.addEventListener('click', (event) => {
     if (!blockMode || !popover.hidden) return;
-    const selection = reviewSelection(); if (selection && !selection.isCollapsed && selection.toString().trim()) return;
-    const block = event.target.closest?.(BLOCK_SELECTOR); if (!block || !reviewRoot.contains(block)) return;
-    const range = reviewRoot.ownerDocument.createRange(); range.selectNodeContents(block);
-    if (!range.toString().trim()) return; event.preventDefault(); pendingRange = range;
-    const point = framePoint(event); openPopoverAt(point.x, point.y + 8, range.toString());
+    const selection = reviewSelection();
+    if (selection && !selection.isCollapsed && selection.toString().trim()) return;
+    const element = pickReviewElement(event.target);
+    if (!element) return;
+    event.preventDefault();
+    pendingRange = null;
+    pendingElement = { element, context: describeElement(element) };
+    hideAddButton();
+    const point = framePoint(event);
+    openPopoverAt(point.x, point.y + 8, '', pendingElement.context);
   });
   await checkRichWarnings();
   setTimeout(checkRichWarnings, 400);
@@ -1080,6 +1226,7 @@ function maybeShowAddButton() {
   if (!rangeInReview(range)) return hideAddButton();
   if (!range.toString().trim()) return hideAddButton();
   pendingRange = range.cloneRange();
+  pendingElement = null;
   const rect = rangeRects(range)[0] || range.getBoundingClientRect();
   addBtn.hidden = false;
   const w = addBtn.offsetWidth;
@@ -1102,7 +1249,10 @@ addBtn.addEventListener('click', () => {
   openPopoverAt(rect.left, rect.top, pendingRange.toString());
 });
 
-function openPopoverAt(x, y, quote) {
+function openPopoverAt(x, y, quote, elementContext = null) {
+  popTarget.hidden = !elementContext;
+  popTarget.textContent = elementContext ? elementLabel(elementContext) + ' · ' + elementContext.selector : '';
+  popQuote.hidden = !!elementContext;
   popQuote.textContent = quote;
   popComment.value = '';
   popover.hidden = false;
@@ -1121,17 +1271,20 @@ let blockMode = false;
 let hoverBlock = null; // highlighted markdown block element
 let hoverLine = null;  // { node, start, range } for a plain-text line
 
-blockToggle.addEventListener('change', () => {
-  blockMode = blockToggle.checked;
-  docEl.classList.toggle('block-mode', blockMode);
-  hintEl.textContent = blockMode
-    ? 'Click a highlighted block to comment on it'
+blockToggle.addEventListener('change', () => setHoverSelect(blockToggle.checked));
+
+function setHoverSelect(enabled) {
+  blockToggle.checked = enabled;
+  blockMode = enabled;
+  docEl.classList.toggle('block-mode', enabled);
+  hintEl.textContent = enabled
+    ? (richMode ? 'Click a highlighted element to comment on it' : 'Click a highlighted block to comment on it')
     : 'Select text, or Shift-click after selecting a word to extend it';
   clearHover();
-});
+}
 
 docWrap.addEventListener('mousemove', (e) => {
-  if (!blockMode || !popover.hidden) return;
+  if (richMode || !blockMode || !popover.hidden) return;
   const block = e.target.closest ? e.target.closest(BLOCK_SELECTOR) : null;
   if (!block || !reviewRoot.contains(block)) return clearHover();
   if (block.classList.contains('plain')) return hoverPlainLine(block, e);
@@ -1248,6 +1401,7 @@ docEl.addEventListener('mousedown', (e) => {
   selection.removeAllRanges();
   selection.addRange(range);
   pendingRange = range.cloneRange();
+  pendingElement = null;
   setTimeout(maybeShowAddButton, 0);
 });
 
@@ -1265,6 +1419,7 @@ docEl.addEventListener('click', (e) => {
   if (!range || !range.toString().trim()) return;
   e.preventDefault();
   pendingRange = range;
+  pendingElement = null;
   hideAddButton();
   openPopoverAt(e.clientX, e.clientY + 8, range.toString());
 });
@@ -1280,6 +1435,7 @@ popComment.addEventListener('keydown', (e) => {
 function closePopover() {
   popover.hidden = true;
   pendingRange = null;
+  pendingElement = null;
   refreshPendingHighlight();
 }
 
@@ -1289,9 +1445,15 @@ function saveAnnotation() {
     popComment.focus();
     return;
   }
-  const range = pendingRange;
-  const details = describeRange(range);
-  const annotation = { id: nextId++, range, comment, ...details };
+  let annotation;
+  if (pendingElement?.element && pendingElement.context) {
+    annotation = { id: nextId++, target: 'element', element: pendingElement.element, context: pendingElement.context, comment };
+  } else if (pendingRange) {
+    const range = pendingRange;
+    annotation = { id: nextId++, target: 'text', range, comment, ...describeRange(range) };
+  } else {
+    return;
+  }
   annotations.push(annotation);
   activeAnnotation = null;
   closePopover();
@@ -1324,9 +1486,9 @@ function describeRange(range) {
 function persistDraft() {
   const draft = {
     general: generalEl.value,
-    annotations: annotations.map(({ id, quote, prefix, suffix, occurrences, comment }) => (
-      { id, quote, prefix, suffix, occurrences, comment }
-    )),
+    annotations: annotations.map((annotation) => annotation.target === 'element'
+      ? { id: annotation.id, target: 'element', context: annotation.context, comment: annotation.comment }
+      : (({ id, quote, prefix, suffix, occurrences, comment }) => ({ id, quote, prefix, suffix, occurrences, comment }))(annotation)),
   };
   try {
     if (!draft.general.trim() && draft.annotations.length === 0) {
@@ -1337,6 +1499,48 @@ function persistDraft() {
   } catch {
     // Storage is optional. The in-memory session still works if it is blocked.
   }
+}
+
+function storedElementContext(value) {
+  if (!value || typeof value !== 'object') return null;
+  const tag = String(value.tag || '').toLowerCase();
+  const selector = boundedText(value.selector, ELEMENT_SELECTOR_LIMIT);
+  if (!/^[a-z][a-z\d-]*$/.test(tag) || !selector.startsWith('body ')) return null;
+  const classes = Array.isArray(value.classes) ? value.classes.map((name) => safeContextValue(name, 80)).filter(Boolean).slice(0, ELEMENT_CLASS_LIMIT) : [];
+  return {
+    targetType: 'element', selector, tag, role: safeContextValue(value.role, 80), id: safeContextValue(value.id, 120),
+    classes, text: boundedText(value.text, ELEMENT_TEXT_LIMIT), html: safeStoredHtmlExcerpt(value.html),
+  };
+}
+function safeStoredHtmlExcerpt(value) {
+  const html = String(value || '');
+  if (html.length > ELEMENT_HTML_LIMIT || !html.startsWith('<')) return '';
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const root = template.content.firstElementChild;
+  if (!root || template.content.children.length !== 1) return '';
+  for (const node of [root, ...root.querySelectorAll('*')]) {
+    if (CONTEXT_EXCLUDED.has(node.localName) || internalReviewNode(node)
+      || node.hasAttribute('hidden') || node.hasAttribute('inert') || node.getAttribute('aria-hidden') === 'true') return '';
+    for (const attribute of [...node.attributes]) {
+      if (!['id', 'class', 'role', 'aria-label', 'alt', 'type'].includes(attribute.name.toLowerCase())
+        || safeContextValue(attribute.value, attribute.name === 'class' ? 80 : 160) !== attribute.value) return '';
+    }
+    if ([...node.classList].some(internalReviewClass)) return '';
+  }
+  return html;
+}
+function restoreElementAnnotation(stored) {
+  const context = storedElementContext(stored.context);
+  if (!context) return null;
+  let element = null;
+  try { element = reviewRoot.ownerDocument.querySelector(context.selector); } catch { return null; }
+  if (!element || !elementFingerprintMatches(element, context)) {
+    const matches = [...reviewRoot.querySelectorAll(context.tag)].filter((candidate) => elementFingerprintMatches(candidate, context));
+    if (matches.length !== 1) return null;
+    element = matches[0];
+  }
+  return { target: 'element', element, context: describeElement(element) };
 }
 
 function restoreDraft() {
@@ -1354,11 +1558,16 @@ function restoreDraft() {
 
   const restored = [];
   for (const stored of draft.annotations) {
-    if (!stored || typeof stored.quote !== 'string' || typeof stored.comment !== 'string') continue;
-    const range = findStoredRange(stored);
-    if (!range) continue;
+    if (!stored || typeof stored.comment !== 'string') continue;
     const id = Number.isInteger(stored.id) && stored.id > 0 ? stored.id : restored.length + 1;
-    restored.push({ id, range, comment: stored.comment, ...describeRange(range) });
+    if (stored.target === 'element') {
+      const elementAnnotation = restoreElementAnnotation(stored);
+      if (elementAnnotation) restored.push({ id, comment: stored.comment, ...elementAnnotation });
+      continue;
+    }
+    if (typeof stored.quote !== 'string') continue;
+    const range = findStoredRange(stored);
+    if (range) restored.push({ id, target: 'text', range, comment: stored.comment, ...describeRange(range) });
   }
   annotations = restored;
   nextId = restored.reduce((largest, annotation) => Math.max(largest, annotation.id), 0) + 1;
@@ -1440,12 +1649,13 @@ function clearDraft() {
 
 function refreshHighlights() {
   if (!richMode && 'highlights' in CSS) {
-    if (annotations.length) {
-      CSS.highlights.set('redpen', new Highlight(...annotations.map((a) => a.range)));
+    const textAnnotations = annotations.filter((annotation) => annotation.target !== 'element');
+    if (textAnnotations.length) {
+      CSS.highlights.set('redpen', new Highlight(...textAnnotations.map((annotation) => annotation.range)));
     } else {
       CSS.highlights.delete('redpen');
     }
-    if (activeAnnotation) {
+    if (activeAnnotation?.target !== 'element') {
       CSS.highlights.set('redpen-active', new Highlight(activeAnnotation.range));
     } else {
       CSS.highlights.delete('redpen-active');
@@ -1496,11 +1706,13 @@ function updateSidebar() {
       editingAnnotation = a;
       refreshHighlights();
       updateSidebar();
-      scrollToRange(a.range);
+      scrollToAnnotation(a);
       requestAnimationFrame(() => listEl.querySelector('.edit-area')?.focus());
     });
     const q = document.createElement('blockquote');
-    q.textContent = a.quote.length > 140 ? a.quote.slice(0, 140) + '…' : a.quote;
+    q.textContent = a.target === 'element' ? elementLabel(a.context) : (a.quote.length > 140 ? a.quote.slice(0, 140) + '…' : a.quote);
+    const context = a.target === 'element' ? document.createElement('p') : null;
+    if (context) { context.className = 'element-context'; context.textContent = a.context.selector; }
     li.addEventListener('click', () => openAnnotation(a));
     li.addEventListener('keydown', (e) => {
       if (e.target !== li || (e.key !== 'Enter' && e.key !== ' ')) return;
@@ -1537,11 +1749,11 @@ function updateSidebar() {
         updateSidebar();
       });
       actions.append(save, cancel);
-      li.append(edit, del, q, input, actions);
+      li.append(edit, del, q, ...(context ? [context] : []), input, actions);
     } else {
       const c = document.createElement('p');
       c.textContent = a.comment;
-      li.append(edit, del, q, c);
+      li.append(edit, del, q, ...(context ? [context] : []), c);
     }
     listEl.appendChild(li);
   }
@@ -1559,12 +1771,18 @@ function openAnnotation(annotation) {
     refreshHighlights();
     updateSidebar();
   }
-  scrollToRange(annotation.range);
+  scrollToAnnotation(annotation);
+}
+
+function scrollToAnnotation(annotation) {
+  if (annotation.target === 'element') annotation.element?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  else scrollToRange(annotation.range);
 }
 
 function clearDocumentSelection() {
   reviewSelection()?.removeAllRanges();
   pendingRange = null;
+  pendingElement = null;
   hideAddButton();
   refreshPendingHighlight();
 }
@@ -1575,12 +1793,23 @@ function scrollToRange(range) {
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
+function elementRects(element) {
+  const frameRect = richFrame?.getBoundingClientRect();
+  return element ? [...element.getClientRects()].map((rect) => frameRect ? ({
+    left: rect.left + frameRect.left, right: rect.right + frameRect.left,
+    top: rect.top + frameRect.top, bottom: rect.bottom + frameRect.top,
+    width: rect.width, height: rect.height,
+  }) : rect) : [];
+}
+function annotationRects(annotation) {
+  return annotation.target === 'element' ? elementRects(annotation.element) : rangeRects(annotation.range);
+}
 function renderAnnotationInk() {
   annotationBands.replaceChildren();
   commentRailBands.replaceChildren();
   inkLayer.replaceChildren();
   renderCommentRailBands();
-  if (!annotations.length && !hoverLine && !pendingRange) return;
+  if (!annotations.length && !hoverLine && !pendingRange && !pendingElement) return;
 
   const width = docWrap.clientWidth;
   const height = Math.max(docWrap.clientHeight, docWrap.scrollHeight);
@@ -1589,24 +1818,24 @@ function renderAnnotationInk() {
   const wrapRect = docWrap.getBoundingClientRect();
 
   for (const annotation of annotations) {
-    const rects = rangeRects(annotation.range)
-      .filter((rect) => rect.width > 2 && rect.height > 2);
+    const rects = annotationRects(annotation).filter((rect) => rect.width > 2 && rect.height > 2);
     rects.forEach((rect, index) => {
       const x = rect.left - wrapRect.left + docWrap.scrollLeft;
-      const y = rect.bottom - wrapRect.top + docWrap.scrollTop;
+      const y = rect.top - wrapRect.top + docWrap.scrollTop;
       const lineWidth = Math.min(rect.width, width - x);
       if (lineWidth <= 2) return;
-      if (annotation === activeAnnotation) {
-        appendAnnotationBand(x, y - rect.height, lineWidth, rect.height);
-      }
-      appendInkLine(x, y + 1.5, lineWidth, annotation.id, index, annotation === activeAnnotation);
+      if (annotation === activeAnnotation) appendAnnotationBand(x, y, lineWidth, rect.height);
+      if (annotation.target === 'element') appendElementInk(x, y, lineWidth, rect.height, annotation.id, annotation === activeAnnotation);
+      else appendInkLine(x, y + rect.height + 1.5, lineWidth, annotation.id, index, annotation === activeAnnotation);
     });
   }
-  if (hoverLine && (richMode || !('highlights' in CSS))) {
-    appendHoverBand(hoverLine.range, wrapRect, width);
-  }
-  if (pendingRange && (richMode || !('highlights' in CSS))) {
-    appendPendingBand(pendingRange, wrapRect, width);
+  if (hoverLine && (richMode || !('highlights' in CSS))) appendHoverBand(hoverLine.range, wrapRect, width);
+  if (pendingRange && (richMode || !('highlights' in CSS))) appendPendingBand(pendingRange, wrapRect, width);
+  if (pendingElement) {
+    for (const rect of elementRects(pendingElement.element).filter((item) => item.width > 2 && item.height > 2)) {
+      appendElementInk(rect.left - wrapRect.left + docWrap.scrollLeft, rect.top - wrapRect.top + docWrap.scrollTop,
+        Math.min(rect.width, width - (rect.left - wrapRect.left + docWrap.scrollLeft)), rect.height, 0, false, true);
+    }
   }
 }
 
@@ -1708,6 +1937,22 @@ function appendAnnotationBand(x, y, width, height, fill = themeColor('--active-b
   annotationBands.appendChild(band);
 }
 
+function appendElementInk(x, y, width, height, annotationId, active, pending = false) {
+  if (width <= 2 || height <= 2) return;
+  const box = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  box.setAttribute('x', Math.max(1, x - 1));
+  box.setAttribute('y', Math.max(1, y - 1));
+  box.setAttribute('width', Math.max(2, width + 2));
+  box.setAttribute('height', Math.max(2, height + 2));
+  box.setAttribute('rx', '3');
+  box.setAttribute('fill', 'none');
+  box.setAttribute('stroke', pending ? themeColor('--pending-mark') : (active ? themeColor('--ink-red-dark') : themeColor('--ink-red')));
+  box.setAttribute('stroke-width', active ? '2.8' : '2.25');
+  box.setAttribute('stroke-dasharray', pending ? '4 3' : '');
+  box.dataset.annotationId = String(annotationId);
+  inkLayer.appendChild(box);
+}
+
 function appendHoverBand(range, wrapRect, maxWidth) {
   appendRangeBand(range, wrapRect, maxWidth, themeColor('--hover-mark'), '.9');
 }
@@ -1771,9 +2016,9 @@ async function submit(action) {
   const payload = {
     action,
     general: generalEl.value.trim(),
-    annotations: annotations.map(({ quote, prefix, suffix, occurrences, comment }) => (
-      { quote, prefix, suffix, occurrences, comment }
-    )),
+    annotations: annotations.map((annotation) => annotation.target === 'element'
+      ? { target: 'element', context: annotation.context, comment: annotation.comment }
+      : (({ quote, prefix, suffix, occurrences, comment }) => ({ quote, prefix, suffix, occurrences, comment }))(annotation)),
   };
   try {
     const res = await fetch('/submit?t=' + token, {

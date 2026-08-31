@@ -568,33 +568,79 @@ function openBrowser(url) {
   }
 }
 
+function reportText(value, limit) {
+  return String(value ?? '').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, limit);
+}
+function reportContextValue(value, limit) {
+  const text = reportText(value, limit);
+  return /(?:token|nonce|session|secret|password|authorization)/i.test(text) ? '' : text;
+}
+function safeHtmlExcerpt(value) {
+  const html = reportText(value, 1200);
+  if (!html.startsWith('<') || /<(?:script|style|template|textarea|option)\b/i.test(html)
+    || /\s(?:hidden|inert|data-[a-z\d_-]+|on[a-z\d_-]+|srcdoc|value|selected|href|src|style|action|formaction|nonce)\b/i.test(html)) return '';
+  const allowed = new Set(['id', 'class', 'role', 'aria-label', 'alt', 'type']);
+  const tags = html.match(/<\/?[a-z][^>]*>/gi);
+  if (!tags) return '';
+  for (const tag of tags) {
+    const names = [...tag.matchAll(/\s([a-z][a-z\d:-]*)(?:\s*=|\s|>)/gi)].map((match) => match[1].toLowerCase());
+    if (names.some((name) => !allowed.has(name))) return '';
+    const classValue = tag.match(/\sclass\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+    if (classValue && /(?:^|\s)(?:block-hover|image-placeholder)(?:\s|$)/.test(classValue[1] ?? classValue[2] ?? classValue[3])) return '';
+  }
+  return /(?:token|nonce|session|secret|password|authorization)/i.test(html) ? '' : html;
+}
+function reportElementContext(value) {
+  if (!value || typeof value !== 'object') return null;
+  const tag = reportContextValue(value.tag, 40).toLowerCase();
+  const selector = reportContextValue(value.selector, 800);
+  if (!/^[a-z][a-z\d-]*$/.test(tag) || !selector.startsWith('body ')) return null;
+  const classes = Array.isArray(value.classes) ? value.classes.map((item) => reportContextValue(item, 80))
+    .filter((item) => /^[a-z\d_-]+$/i.test(item)).slice(0, 8) : [];
+  return {
+    selector, tag, role: reportContextValue(value.role, 80), id: reportContextValue(value.id, 120), classes,
+    text: reportText(value.text, 500), html: safeHtmlExcerpt(value.html),
+  };
+}
+
 function formatReport({ action, general, annotations = [] }, filePath) {
+  const safeAnnotations = Array.isArray(annotations) ? annotations.slice(0, 200) : [];
   const lines = [`ACTION: ${action}`, `FILE: ${filePath}`, ''];
   const generalText = typeof general === 'string' ? general.trim() : '';
-  if (generalText) {
-    lines.push('## General Comment', '', generalText, '');
-  }
-  if (annotations.length > 0) {
-    lines.push(`## Annotations (${annotations.length})`, '');
-    annotations.forEach((a, i) => {
-      lines.push(`### Annotation ${i + 1}`, '', 'Quote:', '');
-      for (const q of String(a.quote ?? '').split('\n')) lines.push(`> ${q}`);
-      lines.push('');
-      if (a.occurrences > 1) {
-        const before = String(a.prefix ?? '').trim();
-        const after = String(a.suffix ?? '').trim();
+  if (generalText) lines.push('## General Comment', '', generalText, '');
+  if (safeAnnotations.length > 0) {
+    lines.push(`## Annotations (${safeAnnotations.length})`, '');
+    safeAnnotations.forEach((annotation, index) => {
+      const elementTarget = annotation?.target === 'element';
+      const context = elementTarget ? reportElementContext(annotation.context) : null;
+      lines.push(`### Annotation ${index + 1}`, '');
+      if (elementTarget) {
+        const safe = context || { selector: '(unavailable)', tag: '(unavailable)', role: '', id: '', classes: [], text: '', html: '' };
         lines.push(
-          `Note: this quote appears ${a.occurrences} times in the document. `
-          + `This one follows "${before}" and precedes "${after}".`,
-          '',
+          'Element Context:', '', `Selector: ${safe.selector}`, `Tag: ${safe.tag}`,
+          `Role: ${safe.role || '(none)'}`, `Id: ${safe.id || '(none)'}`,
+          `Classes: ${safe.classes.length ? safe.classes.join(', ') : '(none)'}`,
+          '', 'Visible Text:', '', `> ${safe.text || '(none)'}`,
+          '', 'HTML Excerpt:', '', `    ${safe.html || '(none)'}`,
+          '', 'Comment:', '', String(annotation.comment ?? '').trim(), '',
         );
+        return;
       }
-      lines.push('Comment:', '', String(a.comment ?? '').trim(), '');
+      const quote = String(annotation?.quote ?? '');
+      lines.push('Quote:', '');
+      for (const line of quote.split('\n')) lines.push(`> ${line}`);
+      lines.push('', 'Location:', '');
+      if (Number(annotation?.occurrences) > 1) {
+        const before = reportText(annotation.prefix, 200);
+        const after = reportText(annotation.suffix, 200);
+        lines.push(`This quote appears ${Math.min(Number(annotation.occurrences), 10000)} times. This one follows "${before}" and precedes "${after}".`, '');
+      } else {
+        lines.push('This quote has a unique match.', '');
+      }
+      lines.push('Comment:', '', String(annotation?.comment ?? '').trim(), '');
     });
   }
-  if (!generalText && annotations.length === 0) {
-    lines.push('No comments were left. The user accepts the document as-is.', '');
-  }
+  if (!generalText && safeAnnotations.length === 0) lines.push('No comments were left. The user accepts the document as-is.', '');
   return lines.join('\n');
 }
 

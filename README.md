@@ -63,8 +63,11 @@ no CDN, runtime fetch, or external network request. In the browser you can:
 - click an annotation to focus it with a red pen band, or edit its comment inline from the comments pane,
 - collapse comments with the `>` button on the document divider; the narrow `<` rail keeps clickable red annotation positions and survives reloads in the same browser tab,
 - choose **Auto**, **Dark**, or **Light** in the header; Auto follows your operating-system setting,
-- or turn on **Hover select** in the header: hovering marks a paragraph (or a
-  line in plain-text files) and clicking it opens the comment box,
+- for HTML files, **Hover select** starts on: hovering marks a visible element,
+  including controls, images, and SVG, and clicking it opens an element comment;
+  turn it off to use the page's safe native interactions,
+- for Markdown and plain text, turn on **Hover select** to mark a paragraph or
+  plain-text line and click it to comment,
 - write one general comment on the whole document,
 - hide and reopen the comments pane from the header; its state survives reloads in the same browser tab,
 - finish with one of two buttons:
@@ -93,6 +96,10 @@ Comment:
 
 the user's comment
 ```
+
+HTML element annotations include a separate Element Context section with a
+selector, identity details, visible text, and a short sanitized HTML excerpt.
+Form values, hidden content, event attributes, and session data are excluded.
 
 Status messages go to stderr. Stdout carries only the report.
 
