@@ -26,8 +26,25 @@ async function startServer() {
   writeFileSync(join(root, 'review.md'), '# Review\n\n![local](pixel.png)\n![svg](safe.svg)\n');
   for (const [name, contents] of Object.entries(FIXTURES)) writeFileSync(join(root, name), contents);
   writeFileSync(join(root, 'bad.png'), 'not an image');
+  writeFileSync(join(root, 'bad.svg'), '<html>not SVG</html>');
+  mkdirSync(join(root, 'styles'));
+  writeFileSync(join(root, 'styles', 'nested.css'), '.nested { background: url(../pixel.png); }');
+  writeFileSync(join(root, 'styles', 'base.css'), '@import "nested.css" screen and (min-width: 1px); .root { background: url(/pixel.png); } .remote { background: url(https://example.test/x.png); }');
+  writeFileSync(join(root, 'styles', 'invalid.css'), Buffer.from([0xff, 0xfe]));
+  writeFileSync(join(root, 'styles', 'nul.css'), 'a{color:red}\0');
+  writeFileSync(join(root, 'styles', 'duplicate.css'), '@import "nested.css" print;');
+  writeFileSync(join(root, 'styles', 'cycle-a.css'), '@import "cycle-b.css";');
+  writeFileSync(join(root, 'styles', 'cycle-b.css'), '@import "cycle-a.css";');
+  mkdirSync(join(root, 'fan'));
+  writeFileSync(join(root, 'fan', 'root.css'), Array.from({ length: 33 }, (_, index) => `@import "${index}.css";`).join(''));
+  for (let index = 0; index < 33; index++) writeFileSync(join(root, 'fan', `${index}.css`), 'a{color:red}');
+  const font = Buffer.alloc(48); font.write('wOF2'); font.writeUInt32BE(font.length, 8);
+  writeFileSync(join(root, 'font.woff2'), font);
+  writeFileSync(join(root, 'bad.woff2'), Buffer.from('not-a-font'));
   writeFileSync(join(temp, 'outside.png'), PNG);
   symlinkSync(join(temp, 'outside.png'), join(root, 'escape.png'));
+  symlinkSync(join(temp, 'outside.png'), join(root, 'styles', 'escape.css'));
+  symlinkSync(join(temp, 'outside.png'), join(root, 'escape.woff2'));
   const child = spawn(process.execPath, [CLI, join(root, 'review.md'), '--no-open'], {
     env: { ...process.env, HOME: home, XDG_CONFIG_HOME: join(temp, 'config') },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -51,8 +68,8 @@ async function startServer() {
   };
 }
 
-function asset(session, name, token = session.token) {
-  return `http://127.0.0.1:${new URL(session.base).port}/asset/${encodeURIComponent(name)}?t=${token}`;
+function asset(session, name, token = session.token, kind = 'asset') {
+  return `http://127.0.0.1:${new URL(session.base).port}/${kind}/${encodeURIComponent(name)}?t=${token}`;
 }
 
 test('serves only tokenized, verified local image files', async (t) => {
@@ -76,7 +93,8 @@ test('serves only tokenized, verified local image files', async (t) => {
   }
   const svg = await fetch(asset(session, 'safe.svg'));
   assert.equal(svg.status, 200);
-  assert.match(svg.headers.get('content-type'), /^text\/plain/);
+  assert.match(svg.headers.get('content-type'), /^image\/svg\+xml/);
+  assert.match(svg.headers.get('content-security-policy'), /default-src 'none'/);
   assert.match(await svg.text(), /<svg/);
 });
 
@@ -91,6 +109,81 @@ test('blocks malformed, non-local, symlinked, and invalid image requests', async
   assert.equal((await fetch(asset(session, 'pixel.png', session.token), { method: 'POST' })).status, 405);
 });
 
+test('rewrites bounded local CSS imports and URLs without serving external resources', async (t) => {
+  const session = await startServer();
+  t.after(() => session.stop());
+  const css = await fetch(asset(session, 'styles/base.css', session.token, 'css'));
+  assert.equal(css.status, 200);
+  const text = await css.text();
+  assert.match(text, new RegExp(`/css/${encodeURIComponent('styles/nested.css')}\\?t=${session.token}`));
+  assert.match(text, /screen and \(min-width: 1px\)/);
+  assert.match(text, new RegExp(`/background/${encodeURIComponent('pixel.png')}\\?t=${session.token}`));
+  assert.doesNotMatch(text, /example\.test|none\(\)/);
+  assert.equal((await fetch(asset(session, '../outside.css', session.token, 'css'))).status, 404);
+  assert.equal((await fetch(asset(session, 'styles/escape.css', session.token, 'css'))).status, 404);
+  assert.equal((await fetch(asset(session, 'font.woff2', session.token, 'font'))).status, 200);
+  assert.equal((await fetch(asset(session, 'bad.woff2', session.token, 'font'))).status, 404);
+  assert.equal((await fetch(asset(session, 'escape.woff2', session.token, 'font'))).status, 404);
+  assert.equal((await fetch(asset(session, 'bad.svg', session.token, 'svg'))).status, 404);
+  assert.equal((await fetch(asset(session, 'pixel.png', session.token, 'css'))).status, 404);
+});
+
+test('rejects invalid CSS and enforces the session-wide stylesheet cap', async (t) => {
+  const session = await startServer();
+  t.after(() => session.stop());
+  for (const name of ['styles/invalid.css', 'styles/nul.css']) {
+    assert.equal((await fetch(asset(session, name, session.token, 'css'))).status, 404, name);
+  }
+  assert.equal((await fetch(asset(session, 'styles/nested.css', session.token, 'css'))).status, 200);
+  const duplicate = await (await fetch(asset(session, 'styles/duplicate.css', session.token, 'css'))).text();
+  assert.match(duplicate, new RegExp(`/css/${encodeURIComponent('styles/nested.css')}\\?t=${session.token}`));
+  assert.match(duplicate, /print/);
+  assert.equal((await fetch(asset(session, 'styles/cycle-a.css', session.token, 'css'))).status, 200);
+  const cycle = await (await fetch(asset(session, 'styles/cycle-b.css', session.token, 'css'))).text();
+  assert.doesNotMatch(cycle, /cycle-a\.css/);
+  assert.equal((await fetch(asset(session, 'fan/root.css', session.token, 'css'))).status, 200);
+  const statuses = [];
+  for (let index = 0; index < 33; index++) statuses.push((await fetch(asset(session, `fan/${index}.css`, session.token, 'css'))).status);
+  assert.ok(statuses.includes(404));
+
+  const rejectedSession = await startServer();
+  t.after(() => rejectedSession.stop());
+  for (let index = 0; index < 32; index++) {
+    assert.equal((await fetch(asset(rejectedSession, `missing-${index}.css`, rejectedSession.token, 'css'))).status, 404);
+  }
+  assert.equal((await fetch(asset(rejectedSession, 'styles/base.css', rejectedSession.token, 'css'))).status, 404);
+});
+
+test('rewrites inline CSS through the tokenized bounded endpoint and reports compact warnings', async (t) => {
+  const session = await startServer();
+  t.after(() => session.stop());
+  const endpoint = `http://127.0.0.1:${new URL(session.base).port}/css-inline?t=${session.token}`;
+  const rewritten = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ css: '@import url("styles/base.css") layer(base); .x { background:url(/pixel.png); src:url(font.woff2) }' }) });
+  assert.equal(rewritten.status, 200);
+  const inline = (await rewritten.json()).css;
+  assert.match(inline, new RegExp(`/css/${encodeURIComponent('styles/base.css')}\\?t=${session.token}`));
+  assert.match(inline, /layer\(base\)/);
+  assert.match(inline, new RegExp(`/background/${encodeURIComponent('pixel.png')}\\?t=${session.token}`));
+  assert.match(inline, new RegExp(`/font/${encodeURIComponent('font.woff2')}\\?t=${session.token}`));
+  const data = 'data:image/png;base64,iVBORw0KGgo=';
+  const dataResult = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ css: `background:url(${data});filter:url(#focus)`, declaration: true }) });
+  const dataCss = (await dataResult.json()).css;
+  assert.match(dataCss, /data:image\/png;base64,iVBORw0KGgo=/);
+  assert.match(dataCss, /;filter:url\(["']?#focus["']?\)/);
+  const bad = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: '{}' });
+  assert.equal(bad.status, 400);
+  const oversized = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ css: 'x'.repeat(256 * 1024) }) });
+  assert.equal(oversized.status, 400);
+  assert.equal((await fetch(asset(session, 'bad.woff2', session.token, 'font'))).status, 404);
+  assert.equal((await fetch(asset(session, 'missing.png'))).status, 404);
+  assert.equal((await fetch(asset(session, 'missing.png', session.token, 'background'))).status, 404);
+  assert.equal((await fetch(asset(session, 'missing.svg', session.token, 'svg'))).status, 404);
+  const warnings = await (await fetch(`http://127.0.0.1:${new URL(session.base).port}/warnings?t=${session.token}`)).json();
+  for (const category of ['background', 'css', 'font', 'image', 'svg']) assert.ok(warnings[category] >= 1, category);
+  assert.equal((await fetch(endpoint.replace(session.token, 'wrong'), { method: 'POST' })).status, 403);
+  assert.equal((await fetch(`http://127.0.0.1:${new URL(session.base).port}/warnings?t=${session.token}`, { method: 'POST' })).status, 404);
+});
+
 test('asset reads are descriptor-based after containment validation', () => {
   const server = String(readFileSync(CLI));
   assert.match(server, /openSync\(target, fsConstants\.O_RDONLY \| \(fsConstants\.O_NOFOLLOW \?\? 0\)\)/);
@@ -100,6 +193,9 @@ test('asset reads are descriptor-based after containment validation', () => {
   assert.match(server, /pathStat\.dev !== descriptorStat\.dev \|\| pathStat\.ino !== descriptorStat\.ino/);
   assert.match(server, /readSync\(fd, bytes/);
   assert.match(server, /closeSync\(fd\)/);
+  assert.match(server, /MAX_DATA_BYTES = 256 \* 1024/);
+  assert.match(server, /safeDataUrl/);
+  assert.match(server, /hasFontMagic/);
 });
 
 test('client image policy retains only local image routes and safe attributes', () => {

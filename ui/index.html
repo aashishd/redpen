@@ -91,6 +91,8 @@
   main { display: flex; flex: 1; min-height: 0; }
   #docwrap { position: relative; flex: 1; min-width: 0; overflow-y: auto; }
   #doc { position: relative; z-index: 1; max-width: 780px; margin: 0 auto; padding: 32px 48px 120px; }
+  #doc.rich { width: 100%; max-width: none; margin: 0; padding: 0; }
+  #doc.rich iframe { display: block; width: 100%; min-height: 100%; border: 0; background: white; }
   #doc h1 { font-size: 1.7em; border-bottom: 1px solid var(--border); padding-bottom: .3em; }
   #doc h2 { font-size: 1.35em; margin-top: 1.6em; }
   #doc h3 { font-size: 1.1em; margin-top: 1.4em; }
@@ -466,6 +468,27 @@ let commentRailPositions = new Map();
 let commentRailPositionsDirty = true;
 let themeGeneration = 0;
 let themeSaveQueue = Promise.resolve();
+let richFrame = null;
+let reviewRoot = docEl;
+let reviewWindow = window;
+let richMode = false;
+
+function reviewSelection() { return reviewWindow.getSelection(); }
+function rangeInReview(range) { return !!range && reviewRoot.contains(range.commonAncestorContainer); }
+function rangeRects(range) {
+  const frameRect = richFrame?.getBoundingClientRect();
+  return [...range.getClientRects()].map((rect) => frameRect ? ({
+    left: rect.left + frameRect.left, right: rect.right + frameRect.left,
+    top: rect.top + frameRect.top, bottom: rect.bottom + frameRect.top,
+    width: rect.width, height: rect.height,
+  }) : rect);
+}
+function reviewCaretFromPoint(x, y) {
+  const doc = reviewRoot.ownerDocument;
+  if (doc.caretRangeFromPoint) { const range = doc.caretRangeFromPoint(x, y); return range ? { node: range.startContainer, offset: range.startOffset } : null; }
+  if (doc.caretPositionFromPoint) { const point = doc.caretPositionFromPoint(x, y); return point ? { node: point.offsetNode, offset: point.offset } : null; }
+  return null;
+}
 
 const themeReady = setupTheme();
 modifierHint.textContent = (navigator.platform || '').toLowerCase().includes('mac') ? '(⌘ + ↵)' : '(⌃ + ↵)';
@@ -485,20 +508,23 @@ async function init() {
     docEl.innerHTML = sanitizeMarkdown(marked.parse(meta.text));
     await renderMermaidBlocks();
   } else if (meta.rendering === 'html') {
-    docEl.innerHTML = sanitizeHtml(meta.text);
+    await renderRichHtml(meta.text);
   } else {
     const pre = document.createElement('pre');
     pre.className = 'plain';
     pre.textContent = meta.text;
     docEl.appendChild(pre);
   }
-  installImageFallbacks();
-  await renderLocalSvgImages();
+  if (!richMode) {
+    installImageFallbacks();
+    await renderLocalSvgImages();
+  }
   restorePaneState();
   const resizeObserver = new ResizeObserver(() => requestAnimationFrame(renderAnnotationInk));
   resizeObserver.observe(docEl);
-  const whole = document.createRange();
-  whole.selectNodeContents(docEl);
+  if (richFrame) resizeObserver.observe(richFrame);
+  const whole = reviewRoot.ownerDocument.createRange();
+  whole.selectNodeContents(reviewRoot);
   docText = whole.toString();
   restoreDraft();
   refreshHighlights();
@@ -752,13 +778,190 @@ function sanitizeLocalSvg(markup) {
   return new XMLSerializer().serializeToString(svg);
 }
 
-function sanitizeHtml(htmlStr) {
-  const tpl = document.createElement('template');
-  tpl.innerHTML = htmlStr;
-  sanitizeDocumentFragment(tpl.content);
-  const div = document.createElement('div');
-  div.appendChild(tpl.content);
-  return div.innerHTML;
+async function renderRichHtml(htmlStr) {
+  const parsed = new DOMParser().parseFromString(htmlStr, 'text/html');
+  const root = parsed.documentElement;
+  const warnings = [];
+  const cssTasks = [];
+  const blocked = 'script,iframe,frame,frameset,object,embed,portal,base,meta,template,canvas,audio,video,source,track';
+  parsed.querySelectorAll(blocked).forEach((node) => { warnings.push(`${node.localName} was blocked`); node.remove(); });
+  for (const el of parsed.querySelectorAll('*')) {
+    for (const attr of [...el.attributes]) {
+      const name = attr.name.toLowerCase();
+      if (name.startsWith('on') || name === 'srcset' || name === 'action' || name === 'target' || name === 'ping') el.removeAttribute(attr.name);
+    }
+    if (el.localName === 'a' || el.localName === 'area') {
+      const href = el.getAttribute('href') || '';
+      if (!href.startsWith('#') || !/^#[\w:.-]+$/.test(href)) el.removeAttribute('href');
+    }
+    if (el.localName === 'img') {
+      if (/\.svg(?:$|[?#])/i.test(el.getAttribute('src') || '')) continue;
+      const route = richResourceUrl(el.getAttribute('src'));
+      if (!route) { el.replaceWith(richPlaceholder(el.getAttribute('alt'))); recordRichWarning('image'); warnings.push('an image was unavailable'); continue; }
+      el.setAttribute('src', route);
+    }
+    if (el.localName === 'link') {
+      const href = richResourceUrl(el.getAttribute('href'), 'css');
+      if ((el.getAttribute('rel') || '').toLowerCase() !== 'stylesheet' || !href) { el.remove(); recordRichWarning('css'); warnings.push('a stylesheet was blocked'); }
+      else { el.setAttribute('href', href); el.removeAttribute('integrity'); el.removeAttribute('crossorigin'); }
+    }
+    if (el.localName === 'style' || el.hasAttribute('style')) {
+      const css = el.localName === 'style' ? el.textContent : el.getAttribute('style');
+      cssTasks.push(rewriteRichCss(css || '', el.localName !== 'style').then((safe) => {
+        if (el.localName === 'style') el.textContent = safe; else el.setAttribute('style', safe);
+      }));
+    }
+    if (el.localName === 'svg') {
+      const safe = sanitizeLocalSvg(new XMLSerializer().serializeToString(el));
+      if (!safe) { el.remove(); warnings.push('an inline SVG was blocked'); }
+      else el.replaceWith(new DOMParser().parseFromString(safe, 'image/svg+xml').documentElement);
+    }
+  }
+  await Promise.all(cssTasks);
+  await Promise.all([...parsed.querySelectorAll('img')].map(async (image) => {
+    const source = image.getAttribute('src') || '';
+    if (!/\.svg(?:$|[?#])/i.test(source)) return;
+    const path = source.split(/[?#]/, 1)[0];
+    const route = richResourceUrl(path, 'svg');
+    try {
+      if (!route) throw new Error('blocked');
+      const response = await fetch(route);
+      if (!response.ok) throw new Error('missing');
+      const safe = sanitizeLocalSvg(await response.text());
+      if (!safe) throw new Error('unsafe');
+      const blob = URL.createObjectURL(new Blob([safe], { type: 'image/svg+xml' }));
+      const revoke = () => URL.revokeObjectURL(blob);
+      image.addEventListener('load', revoke, { once: true });
+      image.addEventListener('error', revoke, { once: true });
+      image.setAttribute('src', blob);
+    } catch { image.replaceWith(richPlaceholder(image.getAttribute('alt'))); recordRichWarning('svg'); warnings.push('an SVG image was unavailable'); }
+  }));
+  const frame = document.createElement('iframe');
+  frame.setAttribute('sandbox', 'allow-same-origin');
+  frame.setAttribute('title', 'Reviewed HTML document');
+  frame.referrerPolicy = 'no-referrer';
+  const warning = warnings.length ? `<p data-redpen-warning style="font:12px sans-serif;padding:6px 10px;margin:0;background:#fff4d6;color:#614700">RedPen: ${warnings[0]}.</p>` : '';
+  frame.srcdoc = `<!doctype html><html${safeFrameAttributes(root)}><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self' data:; form-action 'none'; base-uri 'none'; connect-src 'none'; frame-src 'none'; media-src 'none'; script-src 'none'"><style>* { animation-play-state: paused !important; } .block-hover { background: rgba(255,210,205,.75) !important; outline: 1px solid #bd2028 !important; border-radius: 4px; }</style>${parsed.head.innerHTML}</head><body${safeFrameAttributes(parsed.body)}>${warning}${parsed.body.innerHTML}</body></html>`;
+  docEl.classList.add('rich');
+  docEl.replaceChildren(frame);
+  richFrame = frame;
+  await new Promise((resolve) => frame.addEventListener('load', resolve, { once: true }));
+  reviewRoot = frame.contentDocument.body;
+  reviewWindow = frame.contentWindow;
+  richMode = true;
+  resizeRichFrame();
+  new ResizeObserver(resizeRichFrame).observe(reviewRoot);
+  reviewRoot.addEventListener('load', resizeRichFrame, true);
+  reviewRoot.addEventListener('error', (event) => {
+    const node = event.target;
+    if (node?.localName === 'img') node.replaceWith(richPlaceholder(node.getAttribute('alt')));
+    showFrameWarning('a local resource was unavailable');
+    resizeRichFrame();
+  }, true);
+  reviewRoot.addEventListener('submit', (event) => event.preventDefault());
+  reviewRoot.addEventListener('click', (event) => {
+    const link = event.target.closest?.('a[href^="#"],area[href^="#"]');
+    if (link) { event.preventDefault(); reviewRoot.ownerDocument.getElementById(link.getAttribute('href').slice(1))?.scrollIntoView({ block: 'center' }); }
+  });
+  reviewRoot.ownerDocument.addEventListener('selectionchange', () => { if (selectedDocumentRange()) clearActiveAnnotation(); });
+  reviewRoot.addEventListener('pointerdown', clearActiveAnnotation, true);
+  reviewRoot.addEventListener('mousemove', (event) => {
+    if (!blockMode || !popover.hidden) return;
+    const block = event.target.closest?.(BLOCK_SELECTOR);
+    if (!block || !reviewRoot.contains(block)) return clearHover();
+    clearLineHover();
+    if (hoverBlock === block) return;
+    clearBlockHover(); hoverBlock = block; block.classList.add('block-hover');
+  });
+  reviewRoot.addEventListener('mouseleave', clearHover);
+  reviewRoot.addEventListener('mouseup', () => setTimeout(maybeShowAddButton, 0));
+  reviewRoot.addEventListener('scroll', () => { hideAddButton(); renderAnnotationInk(); }, true);
+  reviewRoot.ownerDocument.addEventListener('keydown', (event) => { if (event.key === 'Escape') { closePopover(); hideAddButton(); } });
+  reviewRoot.addEventListener('mousedown', (event) => {
+    if (blockMode || !popover.hidden || event.button !== 0 || !event.shiftKey) return;
+    const first = selectedDocumentRange(); const second = wordRangeAtPoint(event.clientX, event.clientY);
+    if (!first || !second) return;
+    event.preventDefault(); const range = rangeBetween(first, second); const selection = reviewSelection();
+    selection.removeAllRanges(); selection.addRange(range); pendingRange = range.cloneRange(); setTimeout(maybeShowAddButton, 0);
+  });
+  reviewRoot.addEventListener('click', (event) => {
+    if (!blockMode || !popover.hidden) return;
+    const selection = reviewSelection(); if (selection && !selection.isCollapsed && selection.toString().trim()) return;
+    const block = event.target.closest?.(BLOCK_SELECTOR); if (!block || !reviewRoot.contains(block)) return;
+    const range = reviewRoot.ownerDocument.createRange(); range.selectNodeContents(block);
+    if (!range.toString().trim()) return; event.preventDefault(); pendingRange = range;
+    const point = framePoint(event); openPopoverAt(point.x, point.y + 8, range.toString());
+  });
+  await checkRichWarnings();
+  setTimeout(checkRichWarnings, 400);
+}
+
+function framePoint(event) {
+  const rect = richFrame.getBoundingClientRect();
+  return { x: event.clientX + rect.left, y: event.clientY + rect.top };
+}
+
+function showFrameWarning(message) {
+  if (!reviewRoot || reviewRoot.querySelector('[data-redpen-warning]')) return;
+  const warning = reviewRoot.ownerDocument.createElement('p');
+  warning.dataset.redpenWarning = '';
+  warning.style.cssText = 'font:12px sans-serif;padding:6px 10px;margin:0;background:#fff4d6;color:#614700';
+  warning.textContent = `RedPen: ${message}.`;
+  reviewRoot.prepend(warning);
+}
+
+function resizeRichFrame() {
+  if (!richFrame || !reviewRoot) return;
+  richFrame.style.height = Math.max(docWrap.clientHeight, reviewRoot.scrollHeight + 2) + 'px';
+  renderAnnotationInk();
+}
+
+function richPlaceholder(alt) { const node = document.createElement('span'); node.className = 'image-placeholder'; node.textContent = alt || 'Image unavailable'; return node; }
+function safeFrameAttributes(element) {
+  return [...element.attributes].filter((attr) => ['class', 'id', 'lang', 'dir', 'style'].includes(attr.name.toLowerCase()))
+    .map((attr) => ` ${attr.name}="${attr.value.replaceAll('&', '&amp;').replaceAll('"', '&quot;')}"`).join('');
+}
+function richResourceUrl(raw, kind) {
+  if (!raw) return null;
+  if (/^data:/i.test(raw)) return safeRichDataUrl(raw) ? raw : null;
+  if (/^[a-z][a-z\d+.-]*:/i.test(raw) || raw.startsWith('//')) return null;
+  const path = raw.split(/[?#]/, 1)[0];
+  const clean = path.startsWith('/') ? path.slice(1) : path;
+  if (!clean) return null;
+  const parts = clean.split('/');
+  if (parts.some((part) => !part || part === '..')) return null;
+  const normalized = parts.filter((part) => part !== '.').join('/');
+  if (!normalized) return null;
+  const ext = normalized.split('.').pop().toLowerCase();
+  const allowed = kind === 'css' ? ['css'] : kind === 'svg' ? ['svg'] : ['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'svg'];
+  if (!allowed.includes(ext)) return null;
+  const route = kind === 'css' ? 'css' : kind === 'svg' ? 'svg' : 'asset';
+  return `/${route}/${encodeURIComponent(normalized)}?t=${token}`;
+}
+function safeRichDataUrl(raw) {
+  return /^data:(?:image\/(?:png|jpeg|gif|webp|avif)|font\/(?:woff2?|ttf|otf));base64,[a-z\d+/=]+$/i.test(raw)
+    && raw.length <= 256 * 1024;
+}
+async function rewriteRichCss(css, declaration) {
+  try {
+    const response = await fetch('/css-inline?t=' + token, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ css, declaration }),
+    });
+    const result = await response.json();
+    if (!response.ok || typeof result.css !== 'string') throw new Error('bad CSS response');
+    return result.css;
+  } catch { recordRichWarning('css'); return ''; }
+}
+function recordRichWarning(category) {
+  fetch('/warn?t=' + token, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ category }) }).catch(() => {});
+}
+async function checkRichWarnings() {
+  try {
+    await Promise.race([reviewRoot.ownerDocument.fonts?.ready, new Promise((resolve) => setTimeout(resolve, 500))].filter(Boolean));
+    const response = await fetch('/warnings?t=' + token);
+    const warnings = await response.json();
+    if (response.ok && Object.values(warnings).some((count) => Number(count) > 0)) showFrameWarning('some local resources were unavailable');
+  } catch { /* The reviewed document remains usable if warning polling fails. */ }
 }
 
 paneToggle.addEventListener('click', () => setPaneCollapsed(!commentsPane.hidden));
@@ -871,13 +1074,13 @@ document.addEventListener('keydown', (e) => {
 
 function maybeShowAddButton() {
   if (!popover.hidden) return;
-  const sel = getSelection();
+  const sel = reviewSelection();
   if (!sel || sel.isCollapsed || sel.rangeCount === 0) return hideAddButton();
   const range = sel.getRangeAt(0);
-  if (!docEl.contains(range.commonAncestorContainer)) return hideAddButton();
+  if (!rangeInReview(range)) return hideAddButton();
   if (!range.toString().trim()) return hideAddButton();
   pendingRange = range.cloneRange();
-  const rect = range.getBoundingClientRect();
+  const rect = rangeRects(range)[0] || range.getBoundingClientRect();
   addBtn.hidden = false;
   const w = addBtn.offsetWidth;
   addBtn.style.left = clamp(rect.left + rect.width / 2 - w / 2, 8, innerWidth - w - 8) + 'px';
@@ -930,7 +1133,7 @@ blockToggle.addEventListener('change', () => {
 docWrap.addEventListener('mousemove', (e) => {
   if (!blockMode || !popover.hidden) return;
   const block = e.target.closest ? e.target.closest(BLOCK_SELECTOR) : null;
-  if (!block || !docEl.contains(block)) return clearHover();
+  if (!block || !reviewRoot.contains(block)) return clearHover();
   if (block.classList.contains('plain')) return hoverPlainLine(block, e);
   clearLineHover();
   if (hoverBlock === block) return;
@@ -952,7 +1155,7 @@ function hoverPlainLine(pre, e) {
   if (end === -1) end = text.length;
   if (start >= end) return clearLineHover();
   if (hoverLine && hoverLine.node === pos.node && hoverLine.start === start) return;
-  const range = document.createRange();
+  const range = reviewRoot.ownerDocument.createRange();
   range.setStart(pos.node, start);
   range.setEnd(pos.node, end);
   hoverLine = { node: pos.node, start, range };
@@ -963,17 +1166,7 @@ function hoverPlainLine(pre, e) {
   }
 }
 
-function caretFromPoint(x, y) {
-  if (document.caretRangeFromPoint) {
-    const r = document.caretRangeFromPoint(x, y);
-    return r ? { node: r.startContainer, offset: r.startOffset } : null;
-  }
-  if (document.caretPositionFromPoint) {
-    const p = document.caretPositionFromPoint(x, y);
-    return p ? { node: p.offsetNode, offset: p.offset } : null;
-  }
-  return null;
-}
+function caretFromPoint(x, y) { return reviewCaretFromPoint(x, y); }
 
 function clearBlockHover() {
   if (hoverBlock) {
@@ -1001,17 +1194,17 @@ function rangeBetween(first, second) {
   const firstComesFirst = first.compareBoundaryPoints(Range.START_TO_START, second) <= 0;
   const start = firstComesFirst ? first : second;
   const end = firstComesFirst ? second : first;
-  const range = document.createRange();
+  const range = reviewRoot.ownerDocument.createRange();
   range.setStart(start.startContainer, start.startOffset);
   range.setEnd(end.endContainer, end.endOffset);
   return range;
 }
 
 function selectedDocumentRange() {
-  const selection = getSelection();
+  const selection = reviewSelection();
   if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
   const range = selection.getRangeAt(0);
-  if (!docEl.contains(range.commonAncestorContainer) || !range.toString().trim()) return null;
+  if (!rangeInReview(range) || !range.toString().trim()) return null;
   return range.cloneRange();
 }
 
@@ -1024,7 +1217,7 @@ function clearActiveAnnotation() {
 
 function wordRangeAtPoint(x, y) {
   const position = caretFromPoint(x, y);
-  if (!position || position.node.nodeType !== Node.TEXT_NODE || !docEl.contains(position.node)) return null;
+  if (!position || position.node.nodeType !== Node.TEXT_NODE || !reviewRoot.contains(position.node)) return null;
   const text = position.node.data;
   if (!text) return null;
   let index = Math.min(position.offset, text.length - 1);
@@ -1034,7 +1227,7 @@ function wordRangeAtPoint(x, y) {
   let end = index + 1;
   while (start > 0 && isWordCharacter(text[start - 1])) start--;
   while (end < text.length && isWordCharacter(text[end])) end++;
-  const range = document.createRange();
+  const range = reviewRoot.ownerDocument.createRange();
   range.setStart(position.node, start);
   range.setEnd(position.node, end);
   return range;
@@ -1051,7 +1244,7 @@ docEl.addEventListener('mousedown', (e) => {
   if (!firstRange || !secondRange) return;
   e.preventDefault();
   const range = rangeBetween(firstRange, secondRange);
-  const selection = getSelection();
+  const selection = reviewSelection();
   selection.removeAllRanges();
   selection.addRange(range);
   pendingRange = range.cloneRange();
@@ -1060,13 +1253,13 @@ docEl.addEventListener('mousedown', (e) => {
 
 docEl.addEventListener('click', (e) => {
   if (!blockMode || !popover.hidden) return;
-  const sel = getSelection();
+  const sel = reviewSelection();
   if (sel && !sel.isCollapsed && sel.toString().trim()) return; // manual selection wins
   let range = null;
   if (hoverLine) {
     range = hoverLine.range.cloneRange();
   } else if (hoverBlock && hoverBlock.contains(e.target)) {
-    range = document.createRange();
+    range = reviewRoot.ownerDocument.createRange();
     range.selectNodeContents(hoverBlock);
   }
   if (!range || !range.toString().trim()) return;
@@ -1102,7 +1295,7 @@ function saveAnnotation() {
   annotations.push(annotation);
   activeAnnotation = null;
   closePopover();
-  getSelection().removeAllRanges();
+  reviewSelection().removeAllRanges();
   clearHover();
   refreshHighlights();
   updateSidebar();
@@ -1111,7 +1304,7 @@ function saveAnnotation() {
 
 function describeRange(range) {
   const pre = range.cloneRange();
-  pre.selectNodeContents(docEl);
+  pre.selectNodeContents(reviewRoot);
   pre.setEnd(range.startContainer, range.startOffset);
   const start = pre.toString().length;
   const quote = range.toString();
@@ -1208,7 +1401,7 @@ function matchingPrefixLength(expected, value) {
 }
 
 function rangeFromTextOffsets(start, end) {
-  const walker = document.createTreeWalker(docEl, NodeFilter.SHOW_TEXT);
+  const walker = reviewRoot.ownerDocument.createTreeWalker(reviewRoot, NodeFilter.SHOW_TEXT);
   let offset = 0;
   let startNode;
   let startOffset;
@@ -1229,7 +1422,7 @@ function rangeFromTextOffsets(start, end) {
     offset = nextOffset;
   }
   if (!startNode || !endNode) return null;
-  const range = document.createRange();
+  const range = reviewRoot.ownerDocument.createRange();
   range.setStart(startNode, startOffset);
   range.setEnd(endNode, endOffset);
   return range;
@@ -1246,7 +1439,7 @@ function clearDraft() {
 // ---- highlights + sidebar ----
 
 function refreshHighlights() {
-  if ('highlights' in CSS) {
+  if (!richMode && 'highlights' in CSS) {
     if (annotations.length) {
       CSS.highlights.set('redpen', new Highlight(...annotations.map((a) => a.range)));
     } else {
@@ -1262,7 +1455,7 @@ function refreshHighlights() {
 }
 
 function refreshPendingHighlight() {
-  if ('highlights' in CSS) {
+  if (!richMode && 'highlights' in CSS) {
     if (pendingRange) {
       CSS.highlights.set('redpen-pending', new Highlight(pendingRange));
     } else {
@@ -1370,7 +1563,7 @@ function openAnnotation(annotation) {
 }
 
 function clearDocumentSelection() {
-  getSelection()?.removeAllRanges();
+  reviewSelection()?.removeAllRanges();
   pendingRange = null;
   hideAddButton();
   refreshPendingHighlight();
@@ -1396,7 +1589,7 @@ function renderAnnotationInk() {
   const wrapRect = docWrap.getBoundingClientRect();
 
   for (const annotation of annotations) {
-    const rects = [...annotation.range.getClientRects()]
+    const rects = rangeRects(annotation.range)
       .filter((rect) => rect.width > 2 && rect.height > 2);
     rects.forEach((rect, index) => {
       const x = rect.left - wrapRect.left + docWrap.scrollLeft;
@@ -1409,10 +1602,10 @@ function renderAnnotationInk() {
       appendInkLine(x, y + 1.5, lineWidth, annotation.id, index, annotation === activeAnnotation);
     });
   }
-  if (hoverLine && !('highlights' in CSS)) {
+  if (hoverLine && (richMode || !('highlights' in CSS))) {
     appendHoverBand(hoverLine.range, wrapRect, width);
   }
-  if (pendingRange && !('highlights' in CSS)) {
+  if (pendingRange && (richMode || !('highlights' in CSS))) {
     appendPendingBand(pendingRange, wrapRect, width);
   }
 }
@@ -1524,7 +1717,7 @@ function appendPendingBand(range, wrapRect, maxWidth) {
 }
 
 function appendRangeBand(range, wrapRect, maxWidth, fill, opacity) {
-  const rects = [...range.getClientRects()].filter((rect) => rect.width > 2 && rect.height > 2);
+  const rects = rangeRects(range).filter((rect) => rect.width > 2 && rect.height > 2);
   for (const rect of rects) {
     const x = rect.left - wrapRect.left + docWrap.scrollLeft;
     const y = rect.bottom - wrapRect.top + docWrap.scrollTop;

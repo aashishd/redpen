@@ -13,7 +13,7 @@ contract is a shell command and its stdout, so it works with any coding agent.
 npm install -g redpen-review
 ```
 
-Requires Node 18 or newer. No runtime dependencies.
+Requires Node 18 or newer. RedPen includes PostCSS for safe local stylesheet rewriting.
 
 ## Use
 
@@ -42,16 +42,17 @@ frontmatter and every `%%{...}%%` directive, wherever it appears in the source.
 Invalid, oversized, or rejected diagrams stay as escaped source with a short
 error message.
 
-HTML is rendered as sanitized static content. RedPen removes scripts, styles,
-frames, embeds, forms and controls, SVG, MathML, URL-bearing attributes, and
-other active or externally loaded content. Markdown and HTML may include local
-PNG, JPEG, GIF, WebP, AVIF, or SVG images only when they use a relative path in
-the reviewed document's real directory or a subdirectory. Absolute paths,
-traversal, encoded paths, symlink escapes, remote/data/file URLs, and `srcset`
-are blocked. Raster files are checked by extension and signature before a
-short-lived tokenized route serves them. SVG is served to the app as text,
-strictly sanitized, and displayed from a blob image; it cannot load external
-resources or run active SVG content.
+HTML is rendered as a rich static page in a same-origin sandboxed frame.
+RedPen keeps safe markup, inline styles, local stylesheets and nested local
+imports, local fonts, native controls, details, raster images, and safe inline
+or local SVG. Scripts, form submission, navigation, frames, media, canvas, and
+external requests are blocked. Relative paths resolve from the HTML or CSS file.
+Root-relative paths resolve from the reviewed document directory. Assets must
+remain in that real directory or a subdirectory. Traversal, encoded paths,
+symlink escapes, remote URLs, and bad signatures are rejected. Raster and font
+files use tokenized, descriptor-checked routes with `no-store` and `nosniff`.
+Small image and font data URLs are allowed. Rejected images show a placeholder.
+Rejected styles, fonts, and backgrounds show a compact warning in the page.
 
 This starts a one-shot server on a random localhost port, opens the file in
 your browser, and blocks. Mermaid is served from that same local server. It has

@@ -14,6 +14,8 @@ import { homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import postcss from 'postcss';
+import valueParser from 'postcss-value-parser';
 
 const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const VERSION = JSON.parse(readFileSync(join(PKG_ROOT, 'package.json'), 'utf8')).version;
@@ -24,9 +26,19 @@ const ACCEPTED_FORMATS = '.txt, .md, .markdown, .html, .htm, or an extensionless
 const SETTINGS_FILE = settingsFile();
 const IMAGE_TYPES = new Map([
   ['.png', 'image/png'], ['.jpg', 'image/jpeg'], ['.jpeg', 'image/jpeg'],
-  ['.gif', 'image/gif'], ['.webp', 'image/webp'], ['.avif', 'image/avif'], ['.svg', 'text/plain; charset=utf-8'],
+  ['.gif', 'image/gif'], ['.webp', 'image/webp'], ['.avif', 'image/avif'], ['.svg', 'image/svg+xml'],
 ]);
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_CSS_BYTES = 1024 * 1024;
+const MAX_FONT_BYTES = 10 * 1024 * 1024;
+const MAX_DATA_BYTES = 256 * 1024;
+const MAX_CSS_IMPORTS = 32;
+const MAX_TOTAL_CSS_BYTES = 8 * 1024 * 1024;
+const MAX_INLINE_CSS_BYTES = 256 * 1024;
+const CSS_TYPES = new Map([['.css', 'text/css; charset=utf-8']]);
+const FONT_TYPES = new Map([
+  ['.woff2', 'font/woff2'], ['.woff', 'font/woff'], ['.ttf', 'font/ttf'], ['.otf', 'font/otf'],
+]);
 
 const AGENTS = {
   claude: {
@@ -143,6 +155,7 @@ function serve(args) {
     fail(`cannot resolve document directory: ${error.message}`);
   }
   const token = randomBytes(16).toString('hex');
+  const resourceState = { token, cssRequests: new Set(), cssPaths: new Set(), cssBytes: 0, cssEdges: new Map(), warnings: new Map() };
   const html = readFileSync(join(PKG_ROOT, 'ui', 'index.html'), 'utf8').replaceAll('__REDPEN_TOKEN__', token);
   const markedJs = readFileSync(join(PKG_ROOT, 'ui', 'marked.min.js'), 'utf8');
   const mermaidJs = readFileSync(join(PKG_ROOT, 'ui', 'mermaid.min.js'), 'utf8');
@@ -157,7 +170,14 @@ function serve(args) {
     if (req.method === 'GET' && url.pathname === '/mermaid.min.js') {
       return send(res, 200, 'text/javascript; charset=utf-8', mermaidJs);
     }
-    if (url.pathname.startsWith('/asset/')) return handleAsset(req, res, url, assetRoot);
+    if (url.pathname.startsWith('/asset/')) return handleAsset(req, res, url, assetRoot, resourceState, 'image');
+    if (url.pathname.startsWith('/background/')) return handleAsset(req, res, url, assetRoot, resourceState, 'background');
+    if (url.pathname.startsWith('/svg/')) return handleAsset(req, res, url, assetRoot, resourceState, 'svg');
+    if (url.pathname.startsWith('/css/')) return handleCss(req, res, url, assetRoot, resourceState);
+    if (url.pathname.startsWith('/font/')) return handleFont(req, res, url, assetRoot, resourceState);
+    if (req.method === 'POST' && url.pathname === '/css-inline') return handleInlineCss(req, res, resourceState);
+    if (req.method === 'GET' && url.pathname === '/warnings') return send(res, 200, 'application/json', JSON.stringify(compactWarnings(resourceState)));
+    if (req.method === 'POST' && url.pathname === '/warn') return handleWarning(req, res, resourceState);
     if (req.method === 'GET' && url.pathname === '/') {
       return send(res, 200, 'text/html; charset=utf-8', html);
     }
@@ -168,7 +188,7 @@ function serve(args) {
       return handleThemeSetting(req, res);
     }
     if (req.method === 'GET' && url.pathname === '/doc') {
-      const body = JSON.stringify({ name: basename(filePath), path: filePath, rendering, text });
+      const body = JSON.stringify({ name: basename(filePath), path: filePath, rendering, text, base: '' });
       return send(res, 200, 'application/json', body);
     }
     if (req.method === 'POST' && url.pathname === '/submit') {
@@ -263,53 +283,44 @@ function send(res, status, type, body, headers = {}) {
     'x-content-type-options': 'nosniff',
     // The app is intentionally self-contained: only bundled scripts, its own
     // tokenized endpoints, and sanitized blob images may load.
-    'content-security-policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'; media-src 'none'; form-action 'none'",
+    'content-security-policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'self'; media-src 'none'; form-action 'none'",
     'referrer-policy': 'no-referrer',
     ...headers,
   });
   res.end(body);
 }
 
-function handleAsset(req, res, url, root) {
-  if (req.method !== 'GET') return send(res, 405, 'text/plain', 'method not allowed', { allow: 'GET' });
-  const encoded = url.pathname.slice('/asset/'.length);
+function decodeAssetPath(url, prefix, extensions) {
+  const encoded = url.pathname.slice(prefix.length);
   let localPath;
-  try {
-    localPath = decodeURIComponent(encoded);
-  } catch {
-    return send(res, 400, 'text/plain', 'bad asset path');
-  }
-  // A canonical single encoding prevents decoder differentials and double
-  // encoded traversal forms from reaching filesystem resolution.
-  if (encodeURIComponent(localPath) !== encoded || !isSafeImagePath(localPath)) {
-    return send(res, 404, 'text/plain', 'not found');
-  }
+  try { localPath = decodeURIComponent(encoded); } catch { return null; }
+  if (encodeURIComponent(localPath) !== encoded || !isSafeAssetPath(localPath, extensions)) return null;
+  return localPath;
+}
+
+function handleAsset(req, res, url, root, state, category) {
+  if (req.method !== 'GET') return send(res, 405, 'text/plain', 'method not allowed', { allow: 'GET' });
+  const prefix = category === 'background' ? '/background/' : category === 'svg' ? '/svg/' : '/asset/';
+  const extensions = category === 'svg' ? new Map([['.svg', IMAGE_TYPES.get('.svg')]]) : IMAGE_TYPES;
+  const localPath = decodeAssetPath(url, prefix, extensions);
+  if (!localPath) return missing(res, state, category);
   const type = IMAGE_TYPES.get(extname(localPath).toLowerCase());
   let fd;
   try {
     const candidate = resolve(root, localPath);
     const target = realpathSync(candidate);
-    if (!isContainedAsset(root, target)) return send(res, 404, 'text/plain', 'not found');
-    // Open the resolved object once. O_NOFOLLOW prevents a final-component
-    // swap on platforms that support it; the post-open identity check below
-    // also protects the portable fallback.
+    if (!isContainedAsset(root, target)) return missing(res, state, category);
     fd = openSync(target, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
     const descriptorStat = fstatSync(fd);
-    if (!descriptorStat.isFile() || descriptorStat.size > MAX_IMAGE_BYTES) return send(res, 404, 'text/plain', 'not found');
+    if (!descriptorStat.isFile() || descriptorStat.size > MAX_IMAGE_BYTES) return missing(res, state, category);
     const postOpenTarget = realpathSync(candidate);
-    if (!isContainedAsset(root, postOpenTarget)) return send(res, 404, 'text/plain', 'not found');
+    if (!isContainedAsset(root, postOpenTarget)) return missing(res, state, category);
     const pathStat = statSync(postOpenTarget);
-    if (!pathStat.isFile() || pathStat.dev !== descriptorStat.dev || pathStat.ino !== descriptorStat.ino) {
-      return send(res, 404, 'text/plain', 'not found');
-    }
+    if (!pathStat.isFile() || pathStat.dev !== descriptorStat.dev || pathStat.ino !== descriptorStat.ino) return missing(res, state, category);
     const bytes = readOpenFile(fd, descriptorStat.size);
-    if (type !== 'text/plain; charset=utf-8' && !hasImageMagic(bytes, localPath)) {
-      return send(res, 404, 'text/plain', 'not found');
-    }
-    return send(res, 200, type, bytes);
-  } catch {
-    return send(res, 404, 'text/plain', 'not found');
-  } finally {
+    if (type === 'image/svg+xml' ? !hasSafeSvgRoot(bytes) : !hasImageMagic(bytes, localPath)) return missing(res, state, category);
+    return send(res, 200, type, bytes, type === 'image/svg+xml' ? { 'content-security-policy': "default-src 'none'; style-src 'none'; script-src 'none'; img-src 'none'" } : {});
+  } catch { return missing(res, state, category); } finally {
     if (fd !== undefined) {
       try { closeSync(fd); } catch { /* Descriptor is already unusable. */ }
     }
@@ -332,12 +343,204 @@ function readOpenFile(fd, size) {
   return bytes;
 }
 
-function isSafeImagePath(value) {
+function isSafeAssetPath(value, extensions) {
   if (!value || value.length > 1024 || /[%\\\u0000-\u001f\u007f-\u009f]/.test(value)
     || value.startsWith('/') || value.startsWith('//') || /^[a-z][a-z\d+.-]*:/i.test(value)) return false;
   const parts = value.split('/');
   return parts.every((part) => part && part !== '.' && part !== '..')
-    && IMAGE_TYPES.has(extname(value).toLowerCase());
+    && extensions.has(extname(value).toLowerCase());
+}
+
+function isSafeImagePath(value) { return isSafeAssetPath(value, IMAGE_TYPES); }
+
+async function handleCss(req, res, url, root, state) {
+  if (req.method !== 'GET') return send(res, 405, 'text/plain', 'method not allowed', { allow: 'GET' });
+  const localPath = decodeAssetPath(url, '/css/', CSS_TYPES);
+  if (!localPath) return missing(res, state, 'css');
+  if (!state.cssRequests.has(localPath)) {
+    if (state.cssRequests.size >= MAX_CSS_IMPORTS) return missing(res, state, 'css');
+    state.cssRequests.add(localPath);
+  }
+  try {
+    const bytes = readVerifiedAsset(root, localPath, MAX_CSS_BYTES);
+    const css = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    if (css.includes('\0')) throw new Error('NUL in CSS');
+    if (!state.cssPaths.has(localPath) && state.cssBytes + bytes.length > MAX_TOTAL_CSS_BYTES) throw new Error('CSS session budget');
+    if (!state.cssPaths.has(localPath)) { state.cssPaths.add(localPath); state.cssBytes += bytes.length; }
+    return send(res, 200, 'text/css; charset=utf-8', await rewriteCss(css, localPath, url.searchParams.get('t'), state));
+  } catch { return missing(res, state, 'css'); }
+}
+
+function handleFont(req, res, url, root, state) {
+  if (req.method !== 'GET') return send(res, 405, 'text/plain', 'method not allowed', { allow: 'GET' });
+  const localPath = decodeAssetPath(url, '/font/', FONT_TYPES);
+  if (!localPath) return missing(res, state, 'font');
+  try {
+    const bytes = readVerifiedAsset(root, localPath, MAX_FONT_BYTES);
+    if (!hasFontMagic(bytes, localPath)) throw new Error('bad font signature');
+    return send(res, 200, FONT_TYPES.get(extname(localPath).toLowerCase()), bytes);
+  } catch { return missing(res, state, 'font'); }
+}
+
+function readVerifiedAsset(root, localPath, maxBytes) {
+  let fd;
+  try {
+    const candidate = resolve(root, localPath);
+    const target = realpathSync(candidate);
+    if (!isContainedAsset(root, target)) throw new Error('outside root');
+    fd = openSync(target, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > maxBytes) throw new Error('invalid file');
+    const post = realpathSync(candidate);
+    const pathStat = statSync(post);
+    if (!isContainedAsset(root, post) || pathStat.dev !== stat.dev || pathStat.ino !== stat.ino) throw new Error('changed');
+    return readOpenFile(fd, stat.size);
+  } finally { if (fd !== undefined) closeSync(fd); }
+}
+
+async function rewriteCss(css, sourcePath, token = '__REDPEN_TOKEN__', state, declaration = false) {
+  const root = postcss.parse(declaration ? `:root{${css}}` : css);
+  root.walkAtRules('import', (rule) => {
+    const parsed = valueParser(rule.params);
+    const node = parsed.nodes.find((item) => item.type === 'string' || (item.type === 'function' && item.value.toLowerCase() === 'url'));
+    const raw = node?.type === 'string' ? node.value : urlNodeValue(node?.nodes);
+    const target = localResourcePath(raw, sourcePath, CSS_TYPES);
+    const route = target && localResourceUrl(raw, sourcePath, 'css', token);
+    if (!route || !registerCssImport(state, sourcePath, target)) { recordWarning(state, 'css'); rule.remove(); return; }
+    node.type = 'string'; node.quote = '"'; node.value = route; node.nodes = undefined;
+    rule.params = parsed.toString();
+  });
+  root.walkDecls((decl) => {
+    const parsed = valueParser(decl.value);
+    parsed.walk((node) => {
+      if (node.type !== 'function' || node.value.toLowerCase() !== 'url') return;
+      const raw = urlNodeValue(node.nodes);
+      const category = FONT_TYPES.has(extname(raw.split(/[?#]/, 1)[0]).toLowerCase()) ? 'font' : 'background';
+      const route = localResourceUrl(raw, sourcePath, undefined, token, category);
+      if (!route) { recordWarning(state, category); node.type = 'word'; node.value = 'none'; node.nodes = undefined; return; }
+      node.nodes = [{ type: 'string', quote: '"', value: route }];
+    });
+    decl.value = parsed.toString();
+  });
+  if (!declaration) return root.toString();
+  const block = root.first?.toString() || '';
+  return block.slice(block.indexOf('{') + 1, -1);
+}
+
+function urlNodeValue(nodes = []) {
+  return nodes.length === 1 && nodes[0].type === 'string' ? nodes[0].value : valueParser.stringify(nodes).trim();
+}
+
+function localResourcePath(raw, sourcePath, extensions) {
+  if (!raw || /^data:/i.test(raw) || /^[a-z][a-z\d+.-]*:/i.test(raw) || raw.startsWith('//')) return null;
+  const clean = raw.split(/[?#]/, 1)[0];
+  const target = clean.startsWith('/') ? clean.slice(1) : sourcePath ? join(dirname(sourcePath), clean) : clean;
+  return isSafeAssetPath(target, extensions) ? target : null;
+}
+
+function registerCssImport(state, source, target) {
+  if (!state || !source || !target) return true;
+  if (source === target) return false;
+  const pending = [target];
+  const visited = new Set();
+  while (pending.length) {
+    const current = pending.pop();
+    if (current === source) return false;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    pending.push(...(state.cssEdges.get(current) || []));
+  }
+  if (!state.cssEdges.has(source)) state.cssEdges.set(source, new Set());
+  state.cssEdges.get(source).add(target);
+  return true;
+}
+
+function localResourceUrl(raw, sourcePath, force, token = '__REDPEN_TOKEN__', category = 'background') {
+  if (!raw || /^data:/i.test(raw)) return safeDataUrl(raw) ? raw : null;
+  if (force !== 'css' && /^#[\w:.-]+$/.test(raw)) return raw;
+  const target = localResourcePath(raw, sourcePath, force === 'css' ? CSS_TYPES : new Map([...IMAGE_TYPES, ...FONT_TYPES]));
+  if (!target) return null;
+  const extension = extname(target).toLowerCase();
+  const kind = force === 'css' ? 'css' : FONT_TYPES.has(extension) ? 'font' : category === 'background' ? 'background' : 'asset';
+  return `/${kind}/${encodeURIComponent(target)}?t=${token}`;
+}
+
+function safeDataUrl(value) {
+  if (!/^data:(?:image\/(?:png|jpeg|gif|webp|avif)|font\/(?:woff2?|ttf|otf));base64,[a-z\d+/=]+$/i.test(value || '')) return false;
+  return Buffer.byteLength(value, 'utf8') <= MAX_DATA_BYTES;
+}
+
+function recordWarning(state, category) {
+  if (state && ['css', 'font', 'background', 'image', 'svg'].includes(category)) {
+    state.warnings.set(category, (state.warnings.get(category) || 0) + 1);
+  }
+}
+
+function compactWarnings(state) {
+  return Object.fromEntries([...state.warnings].sort(([first], [second]) => first.localeCompare(second)));
+}
+
+function missing(res, state, category) {
+  recordWarning(state, category);
+  return send(res, 404, 'text/plain', 'not found');
+}
+
+function readJsonBody(req, maxBytes) {
+  return new Promise((resolveBody, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size <= maxBytes) chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (size > maxBytes) return reject(new Error('request too large'));
+      try { resolveBody(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch { reject(new Error('bad JSON')); }
+    });
+    req.on('error', reject);
+  });
+}
+
+async function handleInlineCss(req, res, state) {
+  try {
+    if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '')) throw new Error('content type');
+    const { css, declaration = false } = await readJsonBody(req, MAX_INLINE_CSS_BYTES);
+    if (typeof css !== 'string' || typeof declaration !== 'boolean' || Buffer.byteLength(css, 'utf8') > MAX_INLINE_CSS_BYTES || css.includes('\0')) throw new Error('bad CSS');
+    const text = await rewriteCss(css, '', state.token, state, declaration);
+    return send(res, 200, 'application/json', JSON.stringify({ css: text }));
+  } catch {
+    recordWarning(state, 'css');
+    return send(res, 400, 'application/json', JSON.stringify({ error: 'bad CSS' }));
+  }
+}
+
+async function handleWarning(req, res, state) {
+  try {
+    const { category } = await readJsonBody(req, 256);
+    if (!['css', 'font', 'background', 'image', 'svg'].includes(category)) throw new Error('bad warning');
+    recordWarning(state, category);
+    return send(res, 204, 'text/plain', '');
+  } catch { return send(res, 400, 'text/plain', 'bad warning'); }
+}
+
+function hasFontMagic(bytes, sourcePath) {
+  const ext = extname(sourcePath).toLowerCase();
+  const tag = bytes.subarray(0, 4).toString();
+  if (ext === '.woff') return bytes.length >= 44 && tag === 'wOFF' && bytes.readUInt32BE(8) === bytes.length;
+  if (ext === '.woff2') return bytes.length >= 48 && tag === 'wOF2' && bytes.readUInt32BE(8) === bytes.length;
+  if (ext === '.ttf' || ext === '.otf') {
+    const expected = ext === '.otf' ? 'OTTO' : null;
+    return bytes.length >= 12 && (expected ? tag === expected : tag === 'true' || bytes.subarray(0, 4).equals(Buffer.from([0, 1, 0, 0])))
+      && bytes.length >= 12 + bytes.readUInt16BE(4) * 16;
+  }
+  return false;
+}
+
+function hasSafeSvgRoot(bytes) {
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    return !text.includes('\0') && !/<!doctype/i.test(text) && /^\s*(?:<\?xml[^>]*>\s*)?(?:<!--[\s\S]*?-->\s*)*<svg(?:\s|>)/i.test(text);
+  } catch { return false; }
 }
 
 function hasImageMagic(bytes, sourcePath) {
