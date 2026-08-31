@@ -10,8 +10,8 @@ blocks until the user submits feedback, then prints the feedback to stdout.
 
 Supported files are `.txt`, `.md`, `.markdown`, `.html`, `.htm`, and
 extensionless UTF-8 text files. Refuse every other extension, including
-`.mdx`, before running the command. Explicit `/redpen <path>` is the reliable
-invocation.
+`.mdx`, before running the command. Use this skill when a supported document
+needs interactive annotation.
 
 ## Steps
 

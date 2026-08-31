@@ -43,23 +43,21 @@ const FONT_TYPES = new Map([
 const AGENTS = {
   claude: {
     file: join(homedir(), '.claude', 'skills', 'redpen', 'SKILL.md'),
-    template: 'skill.md',
   },
   pi: {
     file: join(homedir(), '.pi', 'agent', 'skills', 'redpen', 'SKILL.md'),
-    template: 'skill.md',
   },
   codex: {
-    file: join(homedir(), '.codex', 'prompts', 'redpen.md'),
-    template: 'codex.md',
+    file: join(homedir(), '.agents', 'skills', 'redpen', 'SKILL.md'),
+    legacy: { file: join(homedir(), '.codex', 'prompts', 'redpen.md'), template: 'codex.md' },
   },
   opencode: {
-    file: join(homedir(), '.config', 'opencode', 'command', 'redpen.md'),
-    template: 'opencode.md',
+    file: join(homedir(), '.config', 'opencode', 'skills', 'redpen', 'SKILL.md'),
+    legacy: { file: join(homedir(), '.config', 'opencode', 'command', 'redpen.md'), template: 'opencode.md' },
   },
   gemini: {
-    file: join(homedir(), '.gemini', 'commands', 'redpen.toml'),
-    template: 'gemini.toml',
+    file: join(homedir(), '.gemini', 'skills', 'redpen', 'SKILL.md'),
+    legacy: { file: join(homedir(), '.gemini', 'commands', 'redpen.toml'), template: 'gemini.toml' },
   },
 };
 
@@ -86,7 +84,7 @@ function printHelp() {
 Usage:
   redpen <file> [options]         Open <file> for annotation; block until the
                                   user submits; print the feedback to stdout.
-  redpen install <agent...>       Install the /redpen command for agents.
+  redpen install <agent...>       Install the RedPen skill for agents.
   redpen uninstall <agent...>     Remove it again.
 
 Agents: ${Object.keys(AGENTS).join(', ')}, or "all".
@@ -658,28 +656,43 @@ function resolveAgentNames(names) {
   return [...new Set(names)];
 }
 
+function removeOwnedLegacy(name, legacy) {
+  if (!legacy || !existsSync(legacy.file)) return;
+  const expected = readFileSync(join(PKG_ROOT, 'agents', legacy.template), 'utf8');
+  try {
+    if (readFileSync(legacy.file, 'utf8') !== expected) throw new Error('modified');
+  } catch {
+    process.stderr.write(`redpen: warning: preserved modified legacy file for ${name}: ${legacy.file}\n`);
+    return;
+  }
+  rmSync(legacy.file);
+  process.stderr.write(`redpen: removed legacy file for ${name}: ${legacy.file}\n`);
+}
+
 function install(names) {
+  const content = readFileSync(join(PKG_ROOT, 'agents', 'skill.md'), 'utf8');
   for (const name of resolveAgentNames(names)) {
-    const { file, template } = AGENTS[name];
-    const content = readFileSync(join(PKG_ROOT, 'agents', template), 'utf8');
+    const { file, legacy } = AGENTS[name];
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, content);
     process.stderr.write(`redpen: installed for ${name}: ${file}\n`);
+    removeOwnedLegacy(name, legacy);
   }
 }
 
 function uninstall(names) {
   for (const name of resolveAgentNames(names)) {
-    const { file } = AGENTS[name];
+    const { file, legacy } = AGENTS[name];
     if (!existsSync(file)) {
       process.stderr.write(`redpen: not installed for ${name}\n`);
-      continue;
+    } else {
+      rmSync(file);
+      const dir = dirname(file);
+      if (basename(dir) === 'redpen' && readdirSync(dir).length === 0) {
+        rmSync(dir, { recursive: true });
+      }
+      process.stderr.write(`redpen: removed for ${name}: ${file}\n`);
     }
-    rmSync(file);
-    const dir = dirname(file);
-    if (basename(dir) === 'redpen' && readdirSync(dir).length === 0) {
-      rmSync(dir, { recursive: true });
-    }
-    process.stderr.write(`redpen: removed for ${name}: ${file}\n`);
+    removeOwnedLegacy(name, legacy);
   }
 }

@@ -114,30 +114,29 @@ the port, and `--no-open` prints the URL without opening a browser.
 
 ## Agent setup
 
-`redpen install` adds an on-demand `/redpen` command to coding agents:
+`redpen install` adds the RedPen native Agent Skill to coding agents:
 
 ```sh
 redpen install claude codex opencode gemini pi   # or: redpen install all
 redpen uninstall all
 ```
 
-| Agent | File written |
-| --- | --- |
-| claude | `~/.claude/skills/redpen/SKILL.md` |
-| pi | `~/.pi/agent/skills/redpen/SKILL.md` |
-| codex | `~/.codex/prompts/redpen.md` |
-| opencode | `~/.config/opencode/command/redpen.md` |
-| gemini | `~/.gemini/commands/redpen.toml` |
+| Agent | Skill file | Native invocation |
+| --- | --- | --- |
+| Claude | `~/.claude/skills/redpen/SKILL.md` | Activates automatically |
+| Pi | `~/.pi/agent/skills/redpen/SKILL.md` | Activates automatically |
+| Codex | `~/.agents/skills/redpen/SKILL.md` | `$redpen` or automatic |
+| OpenCode | `~/.config/opencode/skills/redpen/SKILL.md` | Activates automatically through its skill tool |
+| Gemini CLI | `~/.gemini/skills/redpen/SKILL.md` | Activates automatically; `/skills` manages skills |
 
-The command tells the agent to run `redpen <file>`, wait for it to exit, and
-act on the `ACTION:` line. `revise` repeats the review loop after applying the
-feedback. `close` applies the feedback and ends the loop. Templates prefer RedPen for requests to add inline
-comments or annotations to a supported document, including “redpen it”, “red
-pen it”, “red-pen it”, “annotate this document”, and “add comments to this
-document”. They do not use it for general reading, summarization, proofreading,
-or code review without interactive document annotation. Explicit `/redpen
-<path>` is reliable. Command-only harness templates do not make natural-language
-requests invoke automatically.
+The skill tells the agent to run `redpen <file>`, wait for it to exit, and act
+on the `ACTION:` line. `revise` repeats the review loop after applying the
+feedback. `close` applies the feedback and ends the loop. It prefers RedPen for
+requests to add inline comments or annotations to a supported document,
+including “redpen it”, “red pen it”, “red-pen it”, “annotate this document”,
+and “add comments to this document”. It does not use RedPen for general
+reading, summarization, proofreading, or code review without interactive
+document annotation.
 
 ## Non-goals
 
