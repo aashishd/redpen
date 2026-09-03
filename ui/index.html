@@ -1648,7 +1648,7 @@ function refreshHighlights() {
     } else {
       CSS.highlights.delete('redpen');
     }
-    if (activeAnnotation?.target !== 'element') {
+    if (activeAnnotation?.target === 'text' && activeAnnotation.range) {
       CSS.highlights.set('redpen-active', new Highlight(activeAnnotation.range));
     } else {
       CSS.highlights.delete('redpen-active');

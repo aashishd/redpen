@@ -45,7 +45,7 @@ async function startServer(temp, name, text) {
 
 // This is intentionally an end-to-end CDP test. It uses no DOM dump and skips only
 // when Chrome or Node's global WebSocket is unavailable.
-test('rich HTML remains safe and reviewable in Chrome', { timeout: 90000 }, async (t) => {
+test('HTML, Markdown, and text remain safe and reviewable in Chrome', { timeout: 90000 }, async (t) => {
   const chrome = chromePath();
   if (!chrome || typeof WebSocket !== 'function') return t.skip('Chrome or global WebSocket is unavailable');
   const temp = mkdtempSync(join(tmpdir(), 'redpen-rich-browser-')); const port = 35000 + Math.floor(Math.random() * 20000);
@@ -60,6 +60,15 @@ test('rich HTML remains safe and reviewable in Chrome', { timeout: 90000 }, asyn
   await cdp.send('Page.enable', {}, session); await cdp.send('Runtime.enable', {}, session); await cdp.send('Network.enable', {}, session);
   await cdp.send('Page.navigate', { url: server.base }, session);
   const value = (code) => cdp.send('Runtime.evaluate', { expression: code, awaitPromise: true, returnByValue: true }, session).then((result) => result.result.value);
+  const saveAndReloadTextAnnotation = async (selector, comment) => {
+    await value(`(() => { const target=document.querySelector(${JSON.stringify(selector)}), walker=document.createTreeWalker(target,NodeFilter.SHOW_TEXT), node=walker.nextNode(), range=document.createRange(); range.setStart(node,0); range.setEnd(node,Math.min(8,node.length)); const selection=getSelection(); selection.removeAllRanges(); selection.addRange(range); target.dispatchEvent(new MouseEvent("mouseup",{bubbles:true})); })()`);
+    await waitFor(() => value('!document.querySelector("#add-btn").hidden'));
+    await value(`document.querySelector("#add-btn").click(); document.querySelector("#pop-comment").value=${JSON.stringify(comment)}; document.querySelector("#pop-save").click()`);
+    await waitFor(() => value('document.querySelectorAll("#list li").length === 1 && Array.from({length:sessionStorage.length},(_,index)=>sessionStorage.key(index)).some((key)=>key.startsWith("redpen-draft:"))'));
+    assert.deepEqual(await value(`(() => { const key=Array.from({length:sessionStorage.length},(_,index)=>sessionStorage.key(index)).find((item)=>item.startsWith("redpen-draft:")), draft=JSON.parse(sessionStorage.getItem(key)); return [document.querySelector("#list li p").textContent,draft.annotations[0].comment,CSS.highlights.has("redpen")] })()`), [comment, comment, true]);
+    await value('document.documentElement.dataset.redpenBeforeReload="true"; location.reload()');
+    await waitFor(() => value(`!document.documentElement.dataset.redpenBeforeReload && document.readyState === "complete" && document.querySelector("#list li p")?.textContent === ${JSON.stringify(comment)} && CSS.highlights.has("redpen")`));
+  };
   await waitFor(() => value('document.querySelector("#doc iframe")?.contentDocument?.body?.textContent.includes("Alpha beta gamma")'));
   await waitFor(() => value('document.querySelector("#block-toggle").checked'));
   assert.deepEqual(await value('(() => { const f=document.querySelector("#doc iframe"); const d=f.contentDocument; return [d.documentElement.className,d.body.className,!!d.querySelector("script"),!!d.querySelector("details[open]"),d.querySelector("#input-target").value,!!d.querySelector("a[href*=example]"),!!d.querySelector("a[href=\\"#fragment-target\\"]"),getComputedStyle(d.querySelector(".inline")).animationPlayState,document.querySelector("#block-toggle").checked] })()'), ['html-root', 'body-root', false, true, 'current-value-should-not-leak', false, true, 'paused', true]);
@@ -134,11 +143,19 @@ test('rich HTML remains safe and reviewable in Chrome', { timeout: 90000 }, asyn
   await value('document.querySelector("#theme-dark").click()');
   assert.deepEqual(await value('(() => { const f=document.querySelector("#doc iframe"); return [document.documentElement.dataset.theme, f.contentDocument.documentElement.dataset.theme || ""] })()'), ['dark', '']);
 
-  const markdownServer = await startServer(temp, 'review.md', '# Markdown regression\n\n![local](pixel.png)\n\n```mermaid\nflowchart LR\n  A --> B\n```\n');
+  const markdownServer = await startServer(temp, 'review.md', '# Markdown regression\n\nMarkdown annotation target.\n\n![local](pixel.png)\n\n```mermaid\nflowchart LR\n  A --> B\n```\n');
   t.after(() => markdownServer.stop());
   await cdp.send('Page.navigate', { url: markdownServer.base }, session);
   await waitFor(() => value('!!document.querySelector(".mermaid-diagram svg")'));
   assert.deepEqual(await value('[!!document.querySelector("#doc iframe"), document.querySelector("#block-toggle").checked, [...document.querySelectorAll("#doc img")].filter((image) => image.getAttribute("src").startsWith("/asset/")).length, document.querySelectorAll(".mermaid-diagram svg").length]'), [false, false, 1, 1]);
+  await saveAndReloadTextAnnotation('#doc p', 'markdown note');
+
+  const textServer = await startServer(temp, 'review.txt', 'Plain text annotation target.\nSecond line.\n');
+  t.after(() => textServer.stop());
+  await cdp.send('Page.navigate', { url: textServer.base }, session);
+  await waitFor(() => value('document.querySelector("#doc pre.plain")?.textContent.includes("Plain text")'));
+  assert.deepEqual(await value('[!!document.querySelector("#doc iframe"), document.querySelector("#block-toggle").checked]'), [false, false]);
+  await saveAndReloadTextAnnotation('#doc pre.plain', 'plain text note');
 
   await cdp.send('Page.navigate', { url: server.base }, session);
   await waitFor(() => value('document.querySelectorAll("#list li").length === 3'));
