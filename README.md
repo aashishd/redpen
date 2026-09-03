@@ -99,7 +99,10 @@ the user's comment
 
 HTML element annotations include a separate Element Context section with a
 selector, identity details, visible text, and a short sanitized HTML excerpt.
-Form values, hidden content, event attributes, and session data are excluded.
+Manual text selections in HTML also retain an advisory Element Location with the
+nearest shared meaningful element's selector and identity details. It has no
+visible text or HTML excerpt. Form values, hidden content, event attributes,
+unsafe URLs, and session data are excluded.
 
 Status messages go to stderr. Stdout carries only the report.
 

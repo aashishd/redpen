@@ -888,6 +888,67 @@ function elementFingerprintMatches(element, context) {
     && visibleElementText(element) === (context.text || '')
     && contextClasses(element).join('\u0001') === (context.classes || []).join('\u0001');
 }
+function safeLocationValue(value, limit) {
+  const text = safeContextValue(value, limit);
+  return /(?:url\s*\(|(?:https?|javascript|data|vbscript):|\/\/)/i.test(text) ? '' : text;
+}
+function safeLocationIdentity(value, limit) {
+  const text = safeLocationValue(value, limit);
+  return /^[a-z\d_-]+$/i.test(text) ? text : '';
+}
+function safeLocationRole(value) {
+  const text = safeLocationValue(value, 80);
+  return /^[a-z][a-z\d-]*$/i.test(text) ? text : '';
+}
+function locationClasses(element) {
+  return [...element.classList].map((name) => safeLocationIdentity(name, 80))
+    .filter((name) => /^[a-z\d_-]+$/i.test(name) && !internalReviewClass(name)).slice(0, ELEMENT_CLASS_LIMIT);
+}
+function validLocationSelector(selector) {
+  return typeof selector === 'string' && selector.length <= ELEMENT_SELECTOR_LIMIT
+    && /^body(?: #(?:[a-z_][a-z\d_-]*|-[a-z_][a-z\d_-]*|--[a-z\d_-]+)|(?: > [a-z][a-z\d-]*:nth-of-type\([1-9]\d{0,4}\))+)$/i.test(selector);
+}
+function locationSelector(element) {
+  const id = safeLocationIdentity(element.id, 120);
+  const idSelector = id ? 'body #' + CSS.escape(id) : '';
+  if (idSelector && validLocationSelector(idSelector)
+    && element.ownerDocument.querySelectorAll('#' + CSS.escape(id)).length === 1) return idSelector;
+  const parts = [];
+  for (let node = element; node && node !== reviewRoot; node = node.parentElement) {
+    let index = 1;
+    for (let sibling = node.previousElementSibling; sibling; sibling = sibling.previousElementSibling) {
+      if (sibling.localName === node.localName) index++;
+    }
+    if (index > 99999) return '';
+    parts.unshift(node.localName + ':nth-of-type(' + index + ')');
+  }
+  const selector = 'body > ' + parts.join(' > ');
+  return validLocationSelector(selector) ? selector : '';
+}
+function meaningfulLocationElement(element) {
+  if (!element || element === reviewRoot || internalReviewNode(element)
+    || [...element.classList].some(internalReviewClass) || !visibleReviewElement(element)) return false;
+  return !['div', 'span'].includes(element.localName) || !!(safeLocationIdentity(element.id, 120)
+    || safeLocationRole(element.getAttribute('role')) || locationClasses(element).length);
+}
+function rangeLocation(range) {
+  if (!richMode || !rangeInReview(range)) return null;
+  const start = range.startContainer.nodeType === Node.ELEMENT_NODE ? range.startContainer : range.startContainer.parentElement;
+  const end = range.endContainer.nodeType === Node.ELEMENT_NODE ? range.endContainer : range.endContainer.parentElement;
+  const ancestors = new Set();
+  for (let node = start; node && node !== reviewRoot; node = node.parentElement) ancestors.add(node);
+  for (let node = end; node && node !== reviewRoot; node = node.parentElement) {
+    if (!ancestors.has(node)) continue;
+    for (let candidate = node; candidate && candidate !== reviewRoot; candidate = candidate.parentElement) {
+      if (!meaningfulLocationElement(candidate)) continue;
+      const tag = candidate.localName.toLowerCase();
+      const selector = locationSelector(candidate);
+      if (!selector) return null;
+      return { selector, tag, role: safeLocationRole(candidate.getAttribute('role')), id: safeLocationIdentity(candidate.id, 120), classes: locationClasses(candidate) };
+    }
+  }
+  return null;
+}
 
 function sanitizeLocalSvg(markup) {
   if (markup.length > 5 * 1024 * 1024) return null;
@@ -1443,7 +1504,8 @@ function saveAnnotation() {
     annotation = { id: nextId++, target: 'element', element: pendingElement.element, context: pendingElement.context, comment };
   } else if (pendingRange) {
     const range = pendingRange;
-    annotation = { id: nextId++, target: 'text', range, comment, ...describeRange(range) };
+    const elementLocation = rangeLocation(range);
+    annotation = { id: nextId++, target: 'text', range, comment, ...describeRange(range), ...(elementLocation ? { elementLocation } : {}) };
   } else {
     return;
   }
@@ -1481,7 +1543,10 @@ function persistDraft() {
     general: generalEl.value,
     annotations: annotations.map((annotation) => annotation.target === 'element'
       ? { id: annotation.id, target: 'element', context: annotation.context, comment: annotation.comment }
-      : (({ id, quote, prefix, suffix, occurrences, comment }) => ({ id, quote, prefix, suffix, occurrences, comment }))(annotation)),
+      : (({ id, quote, prefix, suffix, occurrences, comment }) => {
+        const elementLocation = validatedTextElementLocation(annotation);
+        return { id, quote, prefix, suffix, occurrences, comment, ...(elementLocation ? { elementLocation } : {}) };
+      })(annotation)),
   };
   try {
     if (!draft.general.trim() && draft.annotations.length === 0) {
@@ -1523,6 +1588,20 @@ function safeStoredHtmlExcerpt(value) {
   }
   return html;
 }
+function storedElementLocation(value) {
+  if (!value || typeof value !== 'object') return null;
+  const tag = safeLocationValue(value.tag, 40).toLowerCase();
+  const selector = safeLocationValue(value.selector, ELEMENT_SELECTOR_LIMIT);
+  if (typeof value.selector !== 'string' || value.selector.length > ELEMENT_SELECTOR_LIMIT
+    || !/^[a-z][a-z\d-]*$/.test(tag) || !validLocationSelector(selector)) return null;
+  return { selector };
+}
+function validatedTextElementLocation(annotation) {
+  if (!annotation?.elementLocation) return null;
+  const stored = storedElementLocation(annotation.elementLocation);
+  const location = rangeLocation(annotation.range);
+  return stored && location?.selector === stored.selector ? location : null;
+}
 function restoreElementAnnotation(stored) {
   const context = storedElementContext(stored.context);
   if (!context) return null;
@@ -1560,7 +1639,9 @@ function restoreDraft() {
     }
     if (typeof stored.quote !== 'string') continue;
     const range = findStoredRange(stored);
-    if (range) restored.push({ id, target: 'text', range, comment: stored.comment, ...describeRange(range) });
+    const storedLocation = richMode ? storedElementLocation(stored.elementLocation) : null;
+    const elementLocation = storedLocation && range ? rangeLocation(range) : null;
+    if (range) restored.push({ id, target: 'text', range, comment: stored.comment, ...describeRange(range), ...(elementLocation && elementLocation.selector === storedLocation.selector ? { elementLocation } : {}) });
   }
   annotations = restored;
   nextId = restored.reduce((largest, annotation) => Math.max(largest, annotation.id), 0) + 1;
@@ -1612,11 +1693,11 @@ function rangeFromTextOffsets(start, end) {
   let node;
   while ((node = walker.nextNode())) {
     const nextOffset = offset + node.data.length;
-    if (startNode === undefined && start >= offset && start <= nextOffset) {
+    if (startNode === undefined && start >= offset && start < nextOffset) {
       startNode = node;
       startOffset = start - offset;
     }
-    if (endNode === undefined && end >= offset && end <= nextOffset) {
+    if (endNode === undefined && end > offset && end <= nextOffset) {
       endNode = node;
       endOffset = end - offset;
     }
@@ -1704,8 +1785,9 @@ function updateSidebar() {
     });
     const q = document.createElement('blockquote');
     q.textContent = a.target === 'element' ? elementLabel(a.context) : (a.quote.length > 140 ? a.quote.slice(0, 140) + '…' : a.quote);
-    const context = a.target === 'element' ? document.createElement('p') : null;
-    if (context) { context.className = 'element-context'; context.textContent = a.context.selector; }
+    const elementLocation = a.target === 'text' ? validatedTextElementLocation(a) : null;
+    const context = a.target === 'element' || elementLocation ? document.createElement('p') : null;
+    if (context) { context.className = 'element-context'; context.textContent = a.target === 'element' ? a.context.selector : elementLocation.selector; }
     li.addEventListener('click', () => openAnnotation(a));
     li.addEventListener('keydown', (e) => {
       if (e.target !== li || (e.key !== 'Enter' && e.key !== ' ')) return;
@@ -2011,7 +2093,10 @@ async function submit(action) {
     general: generalEl.value.trim(),
     annotations: annotations.map((annotation) => annotation.target === 'element'
       ? { target: 'element', context: annotation.context, comment: annotation.comment }
-      : (({ quote, prefix, suffix, occurrences, comment }) => ({ quote, prefix, suffix, occurrences, comment }))(annotation)),
+      : (({ quote, prefix, suffix, occurrences, comment }) => {
+        const elementLocation = validatedTextElementLocation(annotation);
+        return { quote, prefix, suffix, occurrences, comment, ...(elementLocation ? { elementLocation } : {}) };
+      })(annotation)),
   };
   try {
     const res = await fetch('/submit?t=' + token, {

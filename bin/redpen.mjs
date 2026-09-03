@@ -588,6 +588,37 @@ function safeHtmlExcerpt(value) {
   }
   return /(?:token|nonce|session|secret|password|authorization)/i.test(html) ? '' : html;
 }
+function reportLocationValue(value, limit) {
+  const text = reportContextValue(value, limit);
+  return /(?:url\s*\(|(?:https?|javascript|data|vbscript):|\/\/)/i.test(text) ? '' : text;
+}
+function reportLocationIdentity(value, limit) {
+  const text = reportLocationValue(value, limit);
+  return /^[a-z\d_-]+$/i.test(text) ? text : '';
+}
+function reportLocationRole(value) {
+  const text = reportLocationValue(value, 80);
+  return /^[a-z][a-z\d-]*$/i.test(text) ? text : '';
+}
+function validReportLocationSelector(selector) {
+  return typeof selector === 'string' && selector.length <= 800
+    && /^body(?: #(?:[a-z_][a-z\d_-]*|-[a-z_][a-z\d_-]*|--[a-z\d_-]+)|(?: > [a-z][a-z\d-]*:nth-of-type\([1-9]\d{0,4}\))+)$/i.test(selector);
+}
+function reportElementLocation(value) {
+  if (!value || typeof value !== 'object') return null;
+  const tag = reportLocationValue(value.tag, 40).toLowerCase();
+  const selector = reportLocationValue(value.selector, 800);
+  if (typeof value.selector !== 'string' || value.selector.length > 800
+    || !/^[a-z][a-z\d-]*$/.test(tag) || !validReportLocationSelector(selector)) return null;
+  const id = reportLocationIdentity(value.id, 120);
+  const idSelector = /^body #(.+)$/i.exec(selector);
+  const structuralSelector = / > ([a-z][a-z\d-]*):nth-of-type\([1-9]\d{0,4}\)$/i.exec(selector);
+  if (idSelector ? id !== idSelector[1] : tag !== structuralSelector?.[1].toLowerCase()) return null;
+  const role = reportLocationRole(value.role);
+  const classes = Array.isArray(value.classes) ? value.classes.map((item) => reportLocationIdentity(item, 80))
+    .filter(Boolean).slice(0, 8) : [];
+  return { selector, tag, role, id, classes };
+}
 function reportElementContext(value) {
   if (!value || typeof value !== 'object') return null;
   const tag = reportContextValue(value.tag, 40).toLowerCase();
@@ -634,6 +665,14 @@ function formatReport({ action, general, annotations = [] }, filePath) {
         lines.push(`This quote appears ${Math.min(Number(annotation.occurrences), 10000)} times. This one follows "${before}" and precedes "${after}".`, '');
       } else {
         lines.push('This quote has a unique match.', '');
+      }
+      const elementLocation = !elementTarget ? reportElementLocation(annotation?.elementLocation) : null;
+      if (elementLocation) {
+        lines.push(
+          'Element Location:', '', `Selector: ${elementLocation.selector}`, `Tag: ${elementLocation.tag}`,
+          `Role: ${elementLocation.role || '(none)'}`, `Id: ${elementLocation.id || '(none)'}`,
+          `Classes: ${elementLocation.classes.length ? elementLocation.classes.join(', ') : '(none)'}`, '',
+        );
       }
       lines.push('Comment:', '', String(annotation?.comment ?? '').trim(), '');
     });
