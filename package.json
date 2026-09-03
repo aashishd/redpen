@@ -1,6 +1,6 @@
 {
   "name": "redpen-review",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Collect red-pen feedback on Markdown, HTML, or plain-text files in the browser. Feedback is printed to stdout for a coding agent to act on.",
   "license": "Apache-2.0",
   "type": "module",
