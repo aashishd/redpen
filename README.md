@@ -54,8 +54,9 @@ files use tokenized, descriptor-checked routes with `no-store` and `nosniff`.
 Small image and font data URLs are allowed. Rejected images show a placeholder.
 Rejected styles, fonts, and backgrounds show a compact warning in the page.
 
-This starts a one-shot server on a random localhost port, opens the file in
-your browser, and blocks. Mermaid is served from that same local server. It has
+This starts a local review session on a random localhost port, opens the file
+in your browser, and waits for feedback. The browser tab and header use the
+same red pen icon. Mermaid is served from that same local server. It has
 no CDN, runtime fetch, or external network request. In the browser you can:
 
 - select text and attach an inline comment to it; Save shows `Save (⌘ + ↵)` on macOS or `Save (⌃ + ↵)` elsewhere,
@@ -63,22 +64,32 @@ no CDN, runtime fetch, or external network request. In the browser you can:
 - click an annotation to focus it with a red pen band, or edit its comment inline from the comments pane,
 - collapse comments with the `>` button on the document divider; the narrow `<` rail keeps clickable red annotation positions and survives reloads in the same browser tab,
 - choose **Auto**, **Dark**, or **Light** in the header; Auto follows your operating-system setting,
-- for HTML files, **Hover select** starts on: hovering marks a visible element,
-  including controls, images, and SVG, and clicking it opens an element comment;
-  turn it off to use the page's safe native interactions,
-- for Markdown and plain text, turn on **Hover select** to mark a paragraph or
-  plain-text line and click it to comment,
-- write one general comment on the whole document,
-- hide and reopen the comments pane from the header; its state survives reloads in the same browser tab,
+- **Hover select** starts on for HTML, Markdown, and plain text.
+- In HTML, hover marks a visible element, including controls, images, and SVG.
+  Click it to comment. Turn off **Hover select** to use safe native interactions.
+- In Markdown and plain text, hover marks a paragraph or line. Click it to comment.
+- write a message or question above the bottom action buttons,
+- see submitted messages on the right and agent replies on the left,
+- expand read-only submitted comments and follow references that still match the document,
+- Draft messages while the agent replies. Document commenting pauses until the
+  reply and any document update finish loading.
 - finish with one of two buttons:
-  - **Submit Feedback & Revise**: the agent should apply all feedback, then open RedPen on the same file again. This repeats for later revise submissions.
-  - **Submit Feedback & Close**: the agent should apply all feedback, report the changes, and stop without reopening RedPen.
+  - **Send for review**: the agent answers questions or edits the document, then replies in the same review page. Submitted document marks disappear. Comments stay in collapsed history and cannot be edited.
+  - **Send feedback and exit**: the agent addresses the feedback and reports the result in its normal chat. RedPen ends the review session.
 
-On submit, the process prints a report to stdout and exits:
+History survives page refreshes and review rounds in that session. It is not
+saved for future sessions. Document updates keep drafts. **Show in document**
+scrolls to an unchanged reference and briefly outlines it. A reference that no
+longer matches shows muted **Original text changed** text instead of a link.
+
+On submit, the foreground command prints a report to stdout and exits. For
+`revise`, the local server stays running so the same page can receive a reply:
 
 ```
 ACTION: revise
 FILE: /path/to/plan.md
+SESSION: http://127.0.0.1:<port>/?t=<session-token>
+TURN: 1
 
 ## General Comment
 
@@ -104,7 +115,26 @@ nearest shared meaningful element's selector and identity details. It has no
 visible text or HTML excerpt. Form values, hidden content, event attributes,
 unsafe URLs, and session data are excluded.
 
-Status messages go to stderr. Stdout carries only the report.
+Status messages go to stderr. Stdout carries only the report. After a revise
+submission, the agent uses the report's session URL and turn number:
+
+```sh
+redpen reply "<SESSION>" --turn 1 --message "Updated the introduction and fixed the example."
+redpen wait "<SESSION>" --after 1
+```
+
+Use `--message-file <path>` instead of `--message` for a longer UTF-8 reply.
+Replies are plain text. A question can receive a reply without a document edit.
+The reply command returns after delivery. The wait command returns the next
+feedback report. Repeating the same reply is safe. Repeating a wait returns the
+same next report; agents must not apply feedback twice. If the foreground
+command is interrupted after submission, use `redpen wait "<SESSION>" --after 0`
+to recover the first report, or supply the last completed turn for a later one.
+
+The server holds conversation history in memory until **Send feedback and
+exit**. It keeps running if the browser tab is closed without that action, so
+reopen the session URL to finish the review. Stopping the initial command before
+any feedback also stops its server.
 
 The theme choice is shared by future RedPen sessions. Set `XDG_CONFIG_HOME` to
 store it in `$XDG_CONFIG_HOME/redpen/settings.json` on any platform. Without
@@ -132,9 +162,11 @@ redpen uninstall all
 | OpenCode | `~/.config/opencode/skills/redpen/SKILL.md` | Activates automatically through its skill tool |
 | Gemini CLI | `~/.gemini/skills/redpen/SKILL.md` | Activates automatically; `/skills` manages skills |
 
-The skill tells the agent to run `redpen <file>`, wait for it to exit, and act
-on the `ACTION:` line. `revise` repeats the review loop after applying the
-feedback. `close` applies the feedback and ends the loop. It prefers RedPen for
+The skill tells the agent to run `redpen <file>`, wait for feedback, and act
+on the `ACTION:` line. For `revise`, it sends an answer or short change summary
+with `redpen reply`, then waits for the next submission with `redpen wait`.
+For `close`, it addresses the feedback and ends the loop. Reinstall the skill
+after upgrading to update existing agent instructions. It prefers RedPen for
 requests to add inline comments or annotations to a supported document,
 including “redpen it”, “red pen it”, “red-pen it”, “annotate this document”,
 and “add comments to this document”. It does not use RedPen for general
@@ -143,4 +175,5 @@ document annotation.
 
 ## Non-goals
 
-No diff or PR review, no sharing, no persistence, no hooks, no build step.
+No diff or PR review, no sharing, no saved cross-session history, no hooks,
+no build step.

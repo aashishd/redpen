@@ -4,21 +4,22 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>redpen</title>
+<link rel="icon" type="image/svg+xml" href="/pen.svg?t=__REDPEN_TOKEN__">
 <script src="/marked.min.js?t=__REDPEN_TOKEN__"></script>
 <script src="/mermaid.min.js?t=__REDPEN_TOKEN__"></script>
 <style>
   :root {
-    --border: #e3d2d2;
-    --muted: #756767;
+    --border: #dedbd4;
+    --muted: #6b655d;
     --accent: #bd2028;
     --accent-dark: #97171e;
     --accent-foreground: #fff;
-    --placeholder: #756767;
+    --placeholder: #6b655d;
     --ink-red: #c6202c;
     --ink-red-dark: #9e1520;
-    --bg: #fffdfd;
-    --bg-soft: #fff7f6;
-    --text: #261c1c;
+    --bg: #fffefa;
+    --bg-soft: #f5f4f0;
+    --text: #262420;
     --mark: #ffe2df;
     --active-mark: #ffd7d3;
     --pending-mark: #ffbcb8;
@@ -33,17 +34,17 @@
   :root[data-theme="light"] { color-scheme: light; }
   :root[data-theme="dark"] {
     color-scheme: dark;
-    --border: #624b4d;
-    --muted: #c5adaf;
+    --border: #4a4c49;
+    --muted: #bdbdb5;
     --accent: #e95058;
     --accent-dark: #ff6c72;
     --accent-foreground: #21191a;
     --placeholder: #d7c4c5;
     --ink-red: #fa6268;
     --ink-red-dark: #ff8589;
-    --bg: #21191a;
-    --bg-soft: #2d2224;
-    --text: #f8ebeb;
+    --bg: #202120;
+    --bg-soft: #282928;
+    --text: #f4f3ef;
     --mark: #4b292b;
     --active-mark: #653438;
     --pending-mark: #74383b;
@@ -57,9 +58,9 @@
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme]) {
       color-scheme: dark;
-      --border: #624b4d; --muted: #c5adaf; --accent: #e95058; --accent-dark: #ff6c72;
-      --accent-foreground: #21191a; --placeholder: #d7c4c5; --ink-red: #fa6268; --ink-red-dark: #ff8589; --bg: #21191a; --bg-soft: #2d2224;
-      --text: #f8ebeb; --mark: #4b292b; --active-mark: #653438; --pending-mark: #74383b;
+      --border: #4a4c49; --muted: #bdbdb5; --accent: #e95058; --accent-dark: #ff6c72;
+      --accent-foreground: #21191a; --placeholder: #d7c4c5; --ink-red: #fa6268; --ink-red-dark: #ff8589; --bg: #202120; --bg-soft: #282928;
+      --text: #f4f3ef; --mark: #4b292b; --active-mark: #653438; --pending-mark: #74383b;
       --hover-mark: #44282a; --active-band: #613236; --selection-text: #fff5f5;
       --selection-bg: #803b40; --active-glow: rgba(250,98,104,.5); --shadow: rgba(0,0,0,.5);
     }
@@ -85,9 +86,11 @@
     padding: 10px 20px;
     border-bottom: 1px solid var(--border);
   }
-  header .brand { color: var(--ink-red-dark); font-weight: 800; letter-spacing: .01em; }
+  header .brand { display: inline-flex; align-items: center; gap: 8px; color: var(--ink-red-dark); font-weight: 800; letter-spacing: .01em; }
+  .brand-icon { display: grid; place-items: center; width: 32px; height: 32px; flex-shrink: 0; border: 1px solid #eadfcd; border-radius: 8px; background: #fff4e8; }
+  .brand-icon img { display: block; width: 22px; height: 22px; }
   header #filename { min-width: 0; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
-  header .hint { flex: 1 1 220px; margin-left: auto; color: var(--muted); font-size: 13px; }
+  header .hint { flex: 1 1 160px; margin-left: auto; color: var(--muted); font-size: 13px; }
   main { display: flex; flex: 1; min-height: 0; }
   #docwrap { position: relative; flex: 1; min-width: 0; overflow-y: auto; }
   #doc { position: relative; z-index: 1; max-width: 780px; margin: 0 auto; padding: 32px 48px 120px; }
@@ -121,7 +124,7 @@
   }
   #doc .mermaid-error { margin: 6px 0 0; color: var(--accent); font-size: 13px; }
   #doc::selection { color: var(--selection-text); background: var(--selection-bg); }
-  #annotation-bands, #ink-layer {
+  #annotation-bands, #ink-layer, #reference-layer {
     position: absolute;
     top: 0;
     left: 0;
@@ -130,12 +133,16 @@
   }
   #annotation-bands { z-index: 2; }
   #ink-layer { z-index: 3; }
+  #reference-layer { z-index: 4; }
+  #reference-layer rect { fill: none; stroke: var(--accent); stroke-width: 2.5; }
   ::highlight(redpen) { background-color: transparent; }
   ::highlight(redpen-active) { background-color: var(--active-mark); color: var(--text); }
   ::highlight(redpen-pending) { background-color: var(--pending-mark); color: var(--text); }
   ::highlight(redpen-hover) { background-color: var(--hover-mark); }
   #doc, #doc * { cursor: var(--pen-cursor), text; }
   #doc a, #doc a * { cursor: pointer; }
+  #doc.commenting-paused, #doc.commenting-paused * { cursor: text; }
+  #commenting-notice { position: fixed; z-index: 40; bottom: 24px; left: 50%; transform: translateX(-50%); width: max-content; max-width: calc(100vw - 32px); padding: 12px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); box-shadow: 0 4px 18px var(--shadow); font-size: 13px; pointer-events: none; }
   .block-hover { background: var(--hover-mark); outline: 1px solid var(--accent); border-radius: 4px; }
   #pop-target { margin: 0 0 6px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
   #pop-target[hidden] { display: none; }
@@ -144,7 +151,7 @@
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    margin-left: 16px;
+    margin-left: 4px;
     cursor: pointer;
     user-select: none;
     font-size: 13px;
@@ -172,11 +179,12 @@
   }
   .switch input:checked + .slider { background: var(--accent); }
   .switch input:checked + .slider::after { left: 18px; }
+  .switch input:focus-visible + .slider { outline: 2px solid var(--accent); outline-offset: 3px; }
 
   #comments-rail {
     position: relative;
-    flex: 0 0 18px;
-    width: 18px;
+    flex: 0 0 32px;
+    width: 32px;
     border-left: 1px solid var(--border);
     background: var(--bg);
   }
@@ -189,10 +197,10 @@
   #comments-rail button {
     position: absolute;
     z-index: 1;
-    top: 8px;
-    left: 1px;
-    width: 16px;
-    height: 28px;
+    top: 12px;
+    left: 3px;
+    width: 26px;
+    height: 32px;
     padding: 0;
     border: 1px solid var(--border);
     border-radius: 4px;
@@ -204,14 +212,14 @@
   }
   #comments-rail button:hover { border-color: var(--accent); color: var(--accent); }
   aside {
-    width: 340px;
+    width: 380px;
     display: flex;
     flex-direction: column;
     background: var(--bg-soft);
   }
   aside[hidden] { display: none; }
   aside h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 8px; }
-  aside section.general { padding: 16px 16px 8px; }
+  aside section.general { padding: 0; }
   textarea {
     color: var(--text);
     background: var(--bg);
@@ -219,6 +227,7 @@
   aside section.general textarea {
     width: 100%;
     min-height: 72px;
+    max-height: 25vh;
     resize: vertical;
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -226,7 +235,24 @@
     font: inherit;
     font-size: 13.5px;
   }
-  aside section.notes { flex: 1; overflow-y: auto; padding: 8px 16px; }
+  aside section.notes { flex: 1; min-height: 0; overflow-y: auto; padding: 18px; }
+  #history { display: flex; flex-direction: column; gap: 14px; margin-bottom: 24px; }
+  #history:empty { display: none; }
+  .message { width: 92%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); overflow-wrap: anywhere; }
+  .message.user { align-self: flex-end; border-bottom-right-radius: 3px; background: var(--mark); }
+  .message.agent { align-self: flex-start; border-bottom-left-radius: 3px; }
+  .message .sender { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+  .message p { margin: 0; font-size: 13.5px; white-space: pre-wrap; }
+  .message details { margin-top: 8px; font-size: 13px; }
+  .message summary { cursor: pointer; }
+  .message ol { margin: 8px 0 0; padding-left: 18px; }
+  .message li + li { margin-top: 12px; }
+  .message blockquote { margin: 0 0 4px; padding-left: 8px; border-left: 2px solid var(--ink-red); color: var(--muted); font-size: 12px; white-space: pre-wrap; }
+  .reference { margin-top: 4px; padding: 2px 0; border: 0; background: transparent; color: var(--ink-red-dark); font: inherit; font-size: 12px; text-decoration: underline; cursor: pointer; }
+  .reference:disabled { color: var(--muted); text-decoration: none; cursor: default; }
+  #review-status { margin: 0; color: var(--muted); font-size: 12px; }
+  #list .unavailable { margin-bottom: 6px; color: var(--muted); font-size: 12px; }
+  #list li.unlinked { cursor: default; }
   #list { list-style: none; margin: 0; padding: 0; }
   #list li {
     position: relative;
@@ -276,7 +302,7 @@
   #list .edit-actions button { padding: 4px 9px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: var(--text); cursor: pointer; font: inherit; font-size: 13px; }
   #list .edit-actions .save { background: var(--accent); border-color: var(--accent); color: var(--accent-foreground); }
   #empty { color: var(--muted); font-size: 13px; }
-  aside footer { padding: 14px 16px; border-top: 1px solid var(--border); display: grid; gap: 8px; }
+  aside footer { padding: 16px 18px; border-top: 1px solid var(--border); display: grid; gap: 8px; }
   button.action {
     padding: 9px 12px;
     border-radius: 6px;
@@ -286,7 +312,7 @@
     font-size: 14px;
     cursor: pointer;
   }
-  button.action.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-foreground); }
+  button.action.primary { padding-block: 11px; background: var(--accent); border-color: var(--accent); color: var(--accent-foreground); font-weight: 600; }
   button.action.primary:hover:not(:disabled) { background: var(--accent-dark); }
   button.action:hover:not(:disabled) { border-color: var(--accent); }
   button.action:disabled { opacity: 1; color: var(--muted); background: var(--bg-soft); border-color: var(--border); cursor: default; }
@@ -356,28 +382,30 @@
   }
   #done h1 { font-size: 1.3em; margin: 0; }
   #done p { color: var(--muted); margin: 0; }
-  .theme-control { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; color: var(--muted); font-size: 13px; }
-  .theme-control button { padding: 3px 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
-  .theme-control button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-foreground); }
+  .theme-control { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-soft); color: var(--muted); font-size: 13px; }
+  .theme-control button { padding: 4px 8px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
+  .theme-control button[aria-pressed="true"] { background: var(--bg); color: var(--text); box-shadow: 0 1px 3px var(--shadow); }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
   #theme-error { flex-basis: 100%; color: var(--accent); font-size: 12px; }
+  #theme-error:empty { display: none; }
   button:focus-visible, textarea:focus-visible, #list li:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   @media (max-width: 600px) {
     header { gap: 6px 8px; padding: 8px 12px; }
     header .hint { flex-basis: 100%; margin-left: 0; order: 2; }
     .theme-control { order: 3; }
     .switch { margin-left: 0; order: 4; }
-    aside { width: min(340px, calc(100vw - 38px)); }
+    aside { width: min(380px, calc(100vw - 52px)); }
     #doc { padding: 24px 20px 96px; }
   }
 </style>
 </head>
 <body>
 <header>
-  <span class="brand">redpen</span>
+  <span class="brand"><span class="brand-icon" aria-hidden="true"><img src="/pen.svg?t=__REDPEN_TOKEN__" alt="" width="22" height="22"></span>redpen</span>
   <span id="filename"></span>
-  <span class="hint" id="hint">Select text, or Shift-click after selecting a word to extend it</span>
-  <div class="theme-control" aria-label="Theme">
-    <span>Theme</span>
+  <span class="hint" id="hint" title="Select text, or Shift-click after selecting a word to extend it">Hover and click to comment</span>
+  <div class="theme-control" role="group" aria-label="Theme">
+    <span class="sr-only">Theme</span>
     <button id="theme-auto" type="button" aria-pressed="true">Auto</button>
     <button id="theme-dark" type="button" aria-pressed="false">Dark</button>
     <button id="theme-light" type="button" aria-pressed="false">Light</button>
@@ -394,27 +422,32 @@
     <svg id="annotation-bands" aria-hidden="true"></svg>
     <article id="doc"></article>
     <svg id="ink-layer" aria-hidden="true"></svg>
+    <svg id="reference-layer" aria-hidden="true"></svg>
   </div>
   <div id="comments-rail">
     <svg id="comment-rail-bands" aria-label="Annotation positions"></svg>
     <button id="pane-toggle" type="button" aria-controls="comments-pane" aria-expanded="true" aria-label="Collapse comments" title="Collapse comments">&gt;</button>
   </div>
   <aside id="comments-pane">
-    <section class="general">
-      <h2>General comment</h2>
-      <textarea id="general" placeholder="Overall feedback on the document (optional)"></textarea>
-    </section>
     <section class="notes">
-      <h2>Annotations <span id="count"></span></h2>
+      <h2>Review chat</h2>
+      <div id="history" role="log" aria-label="Review conversation" aria-live="polite"></div>
+      <h2>Draft annotations <span id="count"></span></h2>
       <ol id="list"></ol>
-      <p id="empty">No annotations yet.</p>
+      <p id="empty">Select something in the document to add a comment.</p>
     </section>
     <footer>
-      <button id="revise" class="action primary" disabled>Submit Feedback &amp; Revise</button>
-      <button id="close-session" class="action">Submit Feedback &amp; Close</button>
+      <p id="review-status" role="status">Connecting to the review session…</p>
+      <section class="general">
+        <h2><label for="general">Message</label></h2>
+        <textarea id="general" placeholder="Ask a question or share feedback…"></textarea>
+      </section>
+      <button id="revise" class="action primary" disabled>Send for review</button>
+      <button id="close-session" class="action" disabled>Send feedback and exit</button>
     </footer>
   </aside>
 </main>
+<div id="commenting-notice" role="status" hidden></div>
 <button id="add-btn" hidden>&#128172; Add comment</button>
 <div id="popover" hidden>
   <p id="pop-target" hidden></p>
@@ -432,11 +465,14 @@
 const token = new URLSearchParams(location.search).get('t');
 const draftKey = 'redpen-draft:' + token;
 const paneKey = 'redpen-comments-collapsed:' + token;
+const submissionKey = 'redpen-submission:' + token;
 const docEl = document.getElementById('doc');
 const docWrap = document.getElementById('docwrap');
 const annotationBands = document.getElementById('annotation-bands');
 const commentRailBands = document.getElementById('comment-rail-bands');
 const inkLayer = document.getElementById('ink-layer');
+const referenceLayer = document.getElementById('reference-layer');
+const commentingNotice = document.getElementById('commenting-notice');
 const addBtn = document.getElementById('add-btn');
 const popover = document.getElementById('popover');
 const popQuote = document.getElementById('pop-quote');
@@ -471,10 +507,23 @@ let richFrame = null;
 let reviewRoot = docEl;
 let reviewWindow = window;
 let richMode = false;
+let reviewState = null;
+let loadedRevision = 0;
+let submitting = false;
+let connected = false;
+let documentPending = false;
+let renderingUpdate = false;
+let richResizeObserver = null;
+let sessionEnded = false;
+let historySignature = '';
+let referenceTarget = null;
+let referenceTimer = null;
+let commentingNoticeTimer = null;
 
 function reviewSelection() { return reviewWindow.getSelection(); }
 function rangeInReview(range) { return !!range && reviewRoot.contains(range.commonAncestorContainer); }
 function rangeRects(range) {
+  if (!range) return [];
   const frameRect = richFrame?.getBoundingClientRect();
   return [...range.getClientRects()].map((rect) => frameRect ? ({
     left: rect.left + frameRect.left, right: rect.right + frameRect.left,
@@ -500,9 +549,33 @@ async function init() {
     docEl.textContent = 'Could not load the document. The redpen session may have ended.';
     return;
   }
-  const meta = await res.json();
-  document.getElementById('filename').textContent = meta.name;
-  document.title = meta.name + ' · redpen';
+  await renderDocument(await res.json());
+  restorePaneState();
+  setHoverSelect(true);
+  const resizeObserver = new ResizeObserver(() => requestAnimationFrame(renderAnnotationInk));
+  resizeObserver.observe(docEl);
+  try {
+    await readSession();
+    if (reviewState.closed) { showDone(reviewState.history.at(-1)?.requestId); return; }
+    const requestId = sessionStorage.getItem(submissionKey);
+    if (requestId && reviewState.history.some((message) => message.requestId === requestId)) clearDraft();
+    sessionStorage.removeItem(submissionKey);
+  } catch { /* Polling retries the connection. Browser storage is optional. */ }
+  restoreDraft();
+  refreshHighlights();
+  updateSidebar();
+  setTimeout(pollSession, 750);
+}
+
+async function renderDocument(meta) {
+  clearReference();
+  richResizeObserver?.disconnect();
+  richFrame = null;
+  richMode = false;
+  reviewRoot = docEl;
+  reviewWindow = window;
+  docEl.classList.remove('rich');
+  docEl.replaceChildren();
   if (meta.rendering === 'markdown') {
     docEl.innerHTML = sanitizeMarkdown(marked.parse(meta.text));
     await renderMermaidBlocks();
@@ -518,17 +591,12 @@ async function init() {
     installImageFallbacks();
     await renderLocalSvgImages();
   }
-  restorePaneState();
-  if (richMode) setHoverSelect(true, false);
-  const resizeObserver = new ResizeObserver(() => requestAnimationFrame(renderAnnotationInk));
-  resizeObserver.observe(docEl);
-  if (richFrame) resizeObserver.observe(richFrame);
   const whole = reviewRoot.ownerDocument.createRange();
   whole.selectNodeContents(reviewRoot);
   docText = whole.toString();
-  restoreDraft();
-  refreshHighlights();
-  updateSidebar();
+  loadedRevision = meta.revision;
+  document.getElementById('filename').textContent = meta.name;
+  document.title = meta.name + ' · redpen';
 }
 
 // Markdown output is treated as static content. Image paths are the only
@@ -1044,7 +1112,8 @@ async function renderRichHtml(htmlStr) {
   reviewWindow = frame.contentWindow;
   richMode = true;
   resizeRichFrame();
-  new ResizeObserver(resizeRichFrame).observe(reviewRoot);
+  richResizeObserver = new ResizeObserver(resizeRichFrame);
+  richResizeObserver.observe(reviewRoot);
   reviewRoot.addEventListener('load', resizeRichFrame, true);
   reviewRoot.addEventListener('error', (event) => {
     const node = event.target;
@@ -1060,7 +1129,10 @@ async function renderRichHtml(htmlStr) {
   });
   reviewRoot.ownerDocument.addEventListener('selectionchange', () => { if (selectedDocumentRange()) clearActiveAnnotation(); });
   reviewRoot.addEventListener('pointerdown', clearActiveAnnotation, true);
+  reviewRoot.addEventListener('pointerdown', clearReference, true);
+  installCommentingGate(reviewRoot);
   reviewRoot.addEventListener('mousemove', (event) => {
+    if (commentingPaused()) return clearHover();
     if (!blockMode || !popover.hidden) return;
     const element = pickReviewElement(event.target);
     if (!element) return clearHover();
@@ -1069,11 +1141,12 @@ async function renderRichHtml(htmlStr) {
     clearBlockHover(); hoverBlock = element; element.classList.add('block-hover');
   });
   reviewRoot.addEventListener('mouseleave', clearHover);
-  reviewRoot.addEventListener('mouseup', () => setTimeout(maybeShowAddButton, 0));
+  reviewRoot.addEventListener('mouseup', () => setTimeout(() => maybeShowAddButton(true), 0));
   reviewRoot.addEventListener('scroll', () => { hideAddButton(); renderAnnotationInk(); }, true);
   reviewRoot.ownerDocument.addEventListener('keydown', (event) => { if (event.key === 'Escape') { closePopover(); hideAddButton(); } });
   reviewRoot.addEventListener('mousedown', (event) => {
     if (blockMode || !popover.hidden || event.button !== 0 || !event.shiftKey) return;
+    if (blockCommenting()) return;
     const first = selectedDocumentRange(); const second = wordRangeAtPoint(event.clientX, event.clientY);
     if (!first || !second) return;
     event.preventDefault(); const range = rangeBetween(first, second); const selection = reviewSelection();
@@ -1250,7 +1323,7 @@ document.addEventListener('selectionchange', () => {
 });
 document.addEventListener('mouseup', (e) => {
   if (popover.contains(e.target) || addBtn.contains(e.target)) return;
-  setTimeout(maybeShowAddButton, 0);
+  setTimeout(() => maybeShowAddButton(docEl.contains(e.target)), 0);
 });
 docWrap.addEventListener('scroll', () => {
   hideAddButton();
@@ -1272,13 +1345,18 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-function maybeShowAddButton() {
+function maybeShowAddButton(notify = false) {
   if (!popover.hidden) return;
   const sel = reviewSelection();
   if (!sel || sel.isCollapsed || sel.rangeCount === 0) return hideAddButton();
   const range = sel.getRangeAt(0);
   if (!rangeInReview(range)) return hideAddButton();
   if (!range.toString().trim()) return hideAddButton();
+  if (commentingPaused()) {
+    hideAddButton();
+    if (notify) showCommentingNotice();
+    return;
+  }
   pendingRange = range.cloneRange();
   pendingElement = null;
   const rect = rangeRects(range)[0] || range.getBoundingClientRect();
@@ -1304,6 +1382,7 @@ addBtn.addEventListener('click', () => {
 });
 
 function openPopoverAt(x, y, quote, elementContext = null) {
+  if (blockCommenting()) return;
   popTarget.hidden = !elementContext;
   popTarget.textContent = elementContext ? elementLabel(elementContext) + ' · ' + elementContext.selector : '';
   popQuote.hidden = !!elementContext;
@@ -1331,13 +1410,12 @@ function setHoverSelect(enabled) {
   blockToggle.checked = enabled;
   blockMode = enabled;
   docEl.classList.toggle('block-mode', enabled);
-  hintEl.textContent = enabled
-    ? (richMode ? 'Click a highlighted element to comment on it' : 'Click a highlighted block to comment on it')
-    : 'Select text, or Shift-click after selecting a word to extend it';
+  updateCommentingHint();
   clearHover();
 }
 
 docWrap.addEventListener('mousemove', (e) => {
+  if (commentingPaused()) return clearHover();
   if (richMode || !blockMode || !popover.hidden) return;
   const block = e.target.closest ? e.target.closest(BLOCK_SELECTOR) : null;
   if (!block || !reviewRoot.contains(block)) return clearHover();
@@ -1446,6 +1524,7 @@ function isWordCharacter(character) {
 
 docEl.addEventListener('mousedown', (e) => {
   if (blockMode || !popover.hidden || e.button !== 0 || !e.shiftKey) return;
+  if (blockCommenting()) return;
   const firstRange = selectedDocumentRange();
   const secondRange = wordRangeAtPoint(e.clientX, e.clientY);
   if (!firstRange || !secondRange) return;
@@ -1493,22 +1572,27 @@ function closePopover() {
   refreshPendingHighlight();
 }
 
+function pendingAnnotation(comment) {
+  if (pendingElement?.element && pendingElement.context) {
+    return { id: nextId++, target: 'element', element: pendingElement.element, context: pendingElement.context, comment };
+  }
+  if (pendingRange) {
+    const range = pendingRange;
+    const elementLocation = rangeLocation(range);
+    return { id: nextId++, target: 'text', range, comment, ...describeRange(range), ...(elementLocation ? { elementLocation } : {}) };
+  }
+  return null;
+}
+
 function saveAnnotation() {
+  if (blockCommenting()) return;
   const comment = popComment.value.trim();
   if (!comment) {
     popComment.focus();
     return;
   }
-  let annotation;
-  if (pendingElement?.element && pendingElement.context) {
-    annotation = { id: nextId++, target: 'element', element: pendingElement.element, context: pendingElement.context, comment };
-  } else if (pendingRange) {
-    const range = pendingRange;
-    const elementLocation = rangeLocation(range);
-    annotation = { id: nextId++, target: 'text', range, comment, ...describeRange(range), ...(elementLocation ? { elementLocation } : {}) };
-  } else {
-    return;
-  }
+  const annotation = pendingAnnotation(comment);
+  if (!annotation) return;
   annotations.push(annotation);
   activeAnnotation = null;
   closePopover();
@@ -1538,8 +1622,8 @@ function describeRange(range) {
 
 // ---- reload persistence ----
 
-function persistDraft() {
-  const draft = {
+function currentDraft() {
+  return {
     general: generalEl.value,
     annotations: annotations.map((annotation) => annotation.target === 'element'
       ? { id: annotation.id, target: 'element', context: annotation.context, comment: annotation.comment }
@@ -1548,6 +1632,10 @@ function persistDraft() {
         return { id, quote, prefix, suffix, occurrences, comment, ...(elementLocation ? { elementLocation } : {}) };
       })(annotation)),
   };
+}
+
+function persistDraft() {
+  const draft = currentDraft();
   try {
     if (!draft.general.trim() && draft.annotations.length === 0) {
       sessionStorage.removeItem(draftKey);
@@ -1615,17 +1703,16 @@ function restoreElementAnnotation(stored) {
   return { target: 'element', element, context: describeElement(element) };
 }
 
-function restoreDraft() {
-  let draft;
-  try {
-    const raw = sessionStorage.getItem(draftKey);
-    if (!raw) return;
-    draft = JSON.parse(raw);
-  } catch {
-    return;
+function restoreDraft(draft) {
+  if (draft === undefined) {
+    try {
+      const raw = sessionStorage.getItem(draftKey);
+      if (!raw) return;
+      draft = JSON.parse(raw);
+    } catch { return; }
   }
   if (!draft || typeof draft !== 'object') return;
-  if (typeof draft.general === 'string') generalEl.value = draft.general;
+  if (typeof draft.general === 'string' && generalEl.value !== draft.general) generalEl.value = draft.general;
   if (!Array.isArray(draft.annotations)) return;
 
   const restored = [];
@@ -1635,22 +1722,28 @@ function restoreDraft() {
     if (stored.target === 'element') {
       const elementAnnotation = restoreElementAnnotation(stored);
       if (elementAnnotation) restored.push({ id, comment: stored.comment, ...elementAnnotation });
+      else {
+        const context = storedElementContext(stored.context);
+        if (context) restored.push({ id, target: 'element', element: null, context, comment: stored.comment, unavailable: true });
+      }
       continue;
     }
     if (typeof stored.quote !== 'string') continue;
-    const range = findStoredRange(stored);
+    const range = findStoredRange(stored, true);
     const storedLocation = richMode ? storedElementLocation(stored.elementLocation) : null;
     const elementLocation = storedLocation && range ? rangeLocation(range) : null;
     if (range) restored.push({ id, target: 'text', range, comment: stored.comment, ...describeRange(range), ...(elementLocation && elementLocation.selector === storedLocation.selector ? { elementLocation } : {}) });
+    else restored.push({ id, target: 'text', range: null, quote: stored.quote, prefix: stored.prefix, suffix: stored.suffix, occurrences: stored.occurrences, comment: stored.comment, unavailable: true });
   }
   annotations = restored;
   nextId = restored.reduce((largest, annotation) => Math.max(largest, annotation.id), 0) + 1;
 }
 
-function findStoredRange(stored) {
+function findStoredRange(stored, strict = false) {
   if (!stored.quote) return null;
   let bestStart = -1;
   let bestScore = -1;
+  let tied = false;
   let start = docText.indexOf(stored.quote);
   while (start !== -1) {
     const before = docText.slice(Math.max(0, start - String(stored.prefix || '').length), start);
@@ -1660,10 +1753,11 @@ function findStoredRange(stored) {
     if (score > bestScore) {
       bestStart = start;
       bestScore = score;
-    }
+      tied = false;
+    } else if (score === bestScore) tied = true;
     start = docText.indexOf(stored.quote, start + 1);
   }
-  return bestStart === -1 ? null : rangeFromTextOffsets(bestStart, bestStart + stored.quote.length);
+  return bestStart === -1 || (strict && tied) ? null : rangeFromTextOffsets(bestStart, bestStart + stored.quote.length);
 }
 
 function matchingSuffixLength(expected, value) {
@@ -1723,7 +1817,7 @@ function clearDraft() {
 
 function refreshHighlights() {
   if (!richMode && 'highlights' in CSS) {
-    const textAnnotations = annotations.filter((annotation) => annotation.target !== 'element');
+    const textAnnotations = annotations.filter((annotation) => annotation.target !== 'element' && annotation.range);
     if (textAnnotations.length) {
       CSS.highlights.set('redpen', new Highlight(...textAnnotations.map((annotation) => annotation.range)));
     } else {
@@ -1762,6 +1856,7 @@ function updateSidebar() {
     del.setAttribute('aria-label', 'Remove annotation');
     del.addEventListener('click', (e) => {
       e.stopPropagation();
+      if (blockCommenting()) return;
       const wasActive = activeAnnotation === a;
       annotations = annotations.filter((x) => x !== a);
       if (editingAnnotation === a) editingAnnotation = null;
@@ -1775,6 +1870,7 @@ function updateSidebar() {
     edit.textContent = 'Edit';
     edit.addEventListener('click', (e) => {
       e.stopPropagation();
+      if (blockCommenting()) return;
       clearDocumentSelection();
       activeAnnotation = a;
       editingAnnotation = a;
@@ -1807,6 +1903,7 @@ function updateSidebar() {
       save.textContent = 'Save';
       save.addEventListener('click', (e) => {
         e.stopPropagation();
+        if (blockCommenting()) return;
         const comment = input.value.trim();
         if (!comment) return input.focus();
         a.comment = comment;
@@ -1829,6 +1926,13 @@ function updateSidebar() {
       const c = document.createElement('p');
       c.textContent = a.comment;
       li.append(edit, del, q, ...(context ? [context] : []), c);
+    }
+    if (a.unavailable) {
+      li.classList.add('unlinked');
+      const warning = document.createElement('p');
+      warning.className = 'unavailable';
+      warning.textContent = 'Reference unavailable. Your comment is kept.';
+      li.prepend(warning);
     }
     listEl.appendChild(li);
   }
@@ -1863,6 +1967,7 @@ function clearDocumentSelection() {
 }
 
 function scrollToRange(range) {
+  if (!range) return;
   const node = range.startContainer;
   const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1880,6 +1985,7 @@ function annotationRects(annotation) {
   return annotation.target === 'element' ? elementRects(annotation.element) : rangeRects(annotation.range);
 }
 function renderAnnotationInk() {
+  renderReference();
   annotationBands.replaceChildren();
   commentRailBands.replaceChildren();
   inkLayer.replaceChildren();
@@ -2076,8 +2182,258 @@ generalEl.addEventListener('input', () => {
   persistDraft();
 });
 
+function commentingPaused() {
+  return submitting || !connected || !reviewState || reviewState.waiting || reviewState.closed
+    || documentPending || renderingUpdate || reviewState.revision !== loadedRevision;
+}
+
+function hideCommentingNotice() {
+  clearTimeout(commentingNoticeTimer);
+  commentingNoticeTimer = null;
+  commentingNotice.hidden = true;
+}
+
+function showCommentingNotice() {
+  const message = reviewState?.waiting
+    ? 'Waiting for the agent’s reply. Commenting will resume when the document is ready.'
+    : 'Commenting is paused until the document is ready.';
+  if (commentingNotice.textContent !== message) commentingNotice.textContent = message;
+  commentingNotice.hidden = false;
+  clearTimeout(commentingNoticeTimer);
+  commentingNoticeTimer = setTimeout(hideCommentingNotice, 3000);
+}
+
+function blockCommenting() {
+  if (!commentingPaused()) return false;
+  showCommentingNotice();
+  return true;
+}
+
+function installCommentingGate(root) {
+  root.addEventListener('click', (event) => {
+    if (!blockMode || !commentingPaused()) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    showCommentingNotice();
+  }, true);
+}
+installCommentingGate(docEl);
+
+function updateCommentingHint() {
+  hintEl.textContent = commentingPaused() ? 'Document commenting paused'
+    : blockMode ? 'Hover and click to comment' : 'Select text to comment';
+}
+
+function keepOpenAnnotationDraft() {
+  // Another client can submit while this one has an open comment. Keep the
+  // existing text before locking its editor or replacing the document.
+  let changed = false;
+  if (editingAnnotation) {
+    const text = listEl.querySelector('.edit-area')?.value.trim();
+    if (text) editingAnnotation.comment = text;
+    editingAnnotation = null;
+    changed = true;
+  }
+  if (!popover.hidden) {
+    const text = popComment.value.trim();
+    const annotation = text && pendingAnnotation(text);
+    if (annotation) annotations.push(annotation);
+    closePopover();
+    changed = true;
+  }
+  if (changed) { persistDraft(); updateSidebar(); }
+}
+
 function updateButtons() {
-  reviseBtn.disabled = annotations.length === 0 && !generalEl.value.trim();
+  const blocked = commentingPaused();
+  if (blocked) { clearHover(); hideAddButton(); keepOpenAnnotationDraft(); }
+  else hideCommentingNotice();
+  docEl.classList.toggle('commenting-paused', blocked);
+  emptyEl.textContent = blocked ? 'Document commenting is paused.' : 'Select something in the document to add a comment.';
+  updateCommentingHint();
+  reviseBtn.disabled = blocked || (annotations.length === 0 && !generalEl.value.trim());
+  closeBtn.disabled = blocked;
+  generalEl.disabled = submitting;
+  popover.inert = blocked;
+  listEl.querySelectorAll('button, textarea').forEach((control) => { control.disabled = blocked; });
+}
+
+// ---- review conversation ----
+
+function reviewStatus(text) { document.getElementById('review-status').textContent = text; }
+
+function clearReference() {
+  clearTimeout(referenceTimer);
+  referenceTimer = null;
+  referenceTarget = null;
+  referenceLayer.replaceChildren();
+  referenceLayer.style.height = '0px';
+}
+
+docWrap.addEventListener('pointerdown', clearReference, true);
+
+function showReference(target) {
+  clearReference();
+  clearHover();
+  const rect = annotationRects(target).find((item) => item.width > 0 && item.height > 0);
+  if (!rect) return;
+  referenceTarget = target;
+  const wrap = docWrap.getBoundingClientRect();
+  // A text file has one large <pre>. Scroll to the quoted line, not its parent.
+  docWrap.scrollTo({
+    top: docWrap.scrollTop + rect.top - wrap.top - (docWrap.clientHeight - Math.min(rect.height, docWrap.clientHeight)) / 2,
+    behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+  });
+  renderReference();
+  referenceTimer = setTimeout(clearReference, 2000);
+}
+
+function renderReference() {
+  referenceLayer.replaceChildren();
+  if (!referenceTarget) return;
+  const width = docWrap.clientWidth;
+  configureInkLayer(referenceLayer, width, Math.max(docWrap.clientHeight, docWrap.scrollHeight));
+  const wrap = docWrap.getBoundingClientRect();
+  for (const rect of annotationRects(referenceTarget)) {
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    const x = Math.max(2, rect.left - wrap.left + docWrap.scrollLeft - 2);
+    const boxWidth = Math.min(rect.width + 4, width - x - 2);
+    if (boxWidth <= 0) continue;
+    const box = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    box.setAttribute('x', x);
+    box.setAttribute('y', Math.max(2, rect.top - wrap.top + docWrap.scrollTop - 2));
+    box.setAttribute('width', boxWidth);
+    box.setAttribute('height', rect.height + 4);
+    box.setAttribute('rx', '3');
+    referenceLayer.appendChild(box);
+  }
+}
+
+function resolveReference(annotation) {
+  if (annotation.target === 'element') return restoreElementAnnotation(annotation);
+  const range = findStoredRange(annotation, true);
+  return range ? { target: 'text', range } : null;
+}
+
+function renderHistory() {
+  const signature = JSON.stringify(reviewState.history);
+  if (signature === historySignature) return;
+  historySignature = signature;
+  const history = document.getElementById('history');
+  const openTurns = new Set([...history.querySelectorAll('details[open]')].map((details) => details.dataset.turn));
+  history.replaceChildren();
+  for (const entry of reviewState.history) {
+    const message = document.createElement('article');
+    message.className = 'message ' + entry.role;
+    const sender = document.createElement('span');
+    sender.className = 'sender';
+    sender.textContent = entry.role === 'user' ? 'You · sent' : 'Agent';
+    message.append(sender);
+    if (entry.text) {
+      const text = document.createElement('p');
+      text.textContent = entry.text;
+      message.append(text);
+    }
+    if (entry.annotations?.length) {
+      const details = document.createElement('details');
+      details.dataset.turn = String(entry.turn);
+      details.open = openTurns.has(String(entry.turn));
+      const summary = document.createElement('summary');
+      summary.textContent = `${entry.annotations.length} submitted comment${entry.annotations.length === 1 ? '' : 's'}`;
+      const list = document.createElement('ol');
+      for (const annotation of entry.annotations) {
+        const item = document.createElement('li');
+        const quote = document.createElement('blockquote');
+        quote.textContent = annotation.target === 'element' ? elementLabel(annotation.context) : annotation.quote;
+        const comment = document.createElement('p');
+        comment.textContent = annotation.comment;
+        const reference = document.createElement('button');
+        reference.className = 'reference';
+        reference.type = 'button';
+        reference.disabled = !resolveReference(annotation);
+        reference.textContent = reference.disabled ? 'Original text changed' : 'Show in document';
+        reference.addEventListener('click', () => {
+          const target = resolveReference(annotation);
+          if (target) showReference(target);
+          else { clearReference(); reference.disabled = true; reference.textContent = 'Original text changed'; }
+        });
+        item.append(quote, comment, reference);
+        list.append(item);
+      }
+      details.append(summary, list);
+      message.append(details);
+    }
+    history.append(message);
+  }
+  commentRailPositionsDirty = true;
+}
+
+let stateRequest = 0;
+async function readSession() {
+  const request = ++stateRequest;
+  const response = await fetch('/session?t=' + token, { signal: AbortSignal.timeout(10000) });
+  if (!response.ok) throw new Error('Session unavailable');
+  const state = await response.json();
+  if (sessionEnded || request !== stateRequest) return;
+  reviewState = state;
+  connected = true;
+  documentPending = state.revision !== loadedRevision;
+  renderHistory();
+  reviewStatus(state.waiting ? 'Waiting for the agent. Document commenting is paused. You can draft a message.'
+    : documentPending ? 'Updating the document. Commenting will resume when it is ready.'
+    : 'Replies appear here. You can send a message or annotate the document.');
+  updateButtons();
+}
+
+async function pollSession() {
+  if (sessionEnded) return;
+  try {
+    if (submitting) return;
+    await readSession();
+    if (submitting || sessionEnded) return;
+    if (reviewState.closed) { showDone(reviewState.history.at(-1)?.requestId); return; }
+    if (reviewState.revision !== loadedRevision) {
+      documentPending = true;
+      updateButtons();
+      const response = await fetch('/doc?t=' + token, { signal: AbortSignal.timeout(10000) });
+      if (!response.ok) throw new Error('Document unavailable');
+      const meta = await response.json();
+      // Keep drafts in memory during a live update. Browser storage may be
+      // blocked or full, so a page reload could silently discard them.
+      const draft = currentDraft();
+      const scroll = docWrap.scrollTop;
+      renderingUpdate = true;
+      updateButtons();
+      clearHover();
+      clearDocumentSelection();
+      activeAnnotation = null;
+      annotations = [];
+      try {
+        await renderDocument(meta);
+        documentPending = false;
+      } finally {
+        // Message input remains available while document rendering awaits assets.
+        draft.general = generalEl.value;
+        restoreDraft(draft);
+        persistDraft();
+        renderingUpdate = false;
+        refreshHighlights();
+        updateSidebar();
+      }
+      docWrap.scrollTop = scroll;
+      historySignature = '';
+      renderHistory();
+      reviewStatus('Replies appear here. You can send a message or annotate the document.');
+      updateButtons();
+    }
+  } catch {
+    if (sessionEnded) return;
+    connected = false;
+    reviewStatus('Connection lost. Your drafts are kept. Reconnecting…');
+    updateButtons();
+  } finally {
+    if (!sessionEnded) setTimeout(pollSession, 750);
+  }
 }
 
 // ---- submit ----
@@ -2086,40 +2442,85 @@ reviseBtn.addEventListener('click', () => submit('revise'));
 closeBtn.addEventListener('click', () => submit('close'));
 
 async function submit(action) {
-  reviseBtn.disabled = true;
-  closeBtn.disabled = true;
+  if (submitting || !connected || !reviewState || reviewState.waiting || documentPending) return;
+  if (!popover.hidden || editingAnnotation) {
+    reviewStatus('Save or cancel your open comment before sending feedback.');
+    return;
+  }
   const payload = {
     action,
+    turn: reviewState.nextTurn,
+    requestId: crypto.randomUUID(),
     general: generalEl.value.trim(),
     annotations: annotations.map((annotation) => annotation.target === 'element'
-      ? { target: 'element', context: annotation.context, comment: annotation.comment }
+      ? { target: 'element', context: annotation.context, comment: annotation.comment, ...(annotation.unavailable ? { unavailable: true } : {}) }
       : (({ quote, prefix, suffix, occurrences, comment }) => {
         const elementLocation = validatedTextElementLocation(annotation);
-        return { quote, prefix, suffix, occurrences, comment, ...(elementLocation ? { elementLocation } : {}) };
+        return { quote, prefix, suffix, occurrences, comment, ...(elementLocation ? { elementLocation } : {}), ...(annotation.unavailable ? { unavailable: true } : {}) };
       })(annotation)),
   };
+  submitting = true;
+  updateButtons();
+  persistDraft();
+  try { sessionStorage.setItem(submissionKey, payload.requestId); } catch { /* Storage is optional. */ }
   try {
     const res = await fetch('/submit?t=' + token, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) throw new Error('HTTP ' + res.status);
-    clearDraft();
-    showDone(action);
+    finishSubmission(payload);
   } catch (err) {
-    alert('Submitting failed: ' + err.message);
-    closeBtn.disabled = false;
+    // A response can be lost after the server accepted the message. Reconcile
+    // its ID before enabling another submission or clearing the saved draft.
+    try {
+      await readSession();
+      if (reviewState.history.some((message) => message.requestId === payload.requestId)) return finishSubmission(payload);
+    } catch { connected = false; }
+    submitting = false;
+    reviewStatus('Could not confirm delivery. Your draft is kept. ' + err.message);
     updateButtons();
   }
 }
 
-function showDone(action) {
-  const detail = action === 'revise'
-    ? 'The agent will now revise the document.'
-    : 'The feedback was delivered. The session is closed.';
+function finishSubmission(payload) {
+  clearReference();
+  clearDraft();
+  try { sessionStorage.removeItem(submissionKey); } catch { /* Storage is optional. */ }
+  submitting = false;
+  if (payload.action === 'close') return showDone(payload.requestId);
+  generalEl.value = '';
+  annotations = [];
+  activeAnnotation = null;
+  editingAnnotation = null;
+  closePopover();
+  clearDocumentSelection();
+  clearHover();
+  refreshHighlights();
+  if (!reviewState.history.some((message) => message.requestId === payload.requestId)) {
+    reviewState.history.push({ role: 'user', turn: payload.turn, requestId: payload.requestId, text: payload.general, annotations: payload.annotations });
+  }
+  reviewState.waiting = true;
+  renderHistory();
+  updateSidebar();
+  reviewStatus('Waiting for the agent. Document commenting is paused. You can draft a message.');
+  document.querySelector('section.notes').scrollTop = document.querySelector('section.notes').scrollHeight;
+  generalEl.focus();
+}
+
+function showDone(requestId) {
+  if (sessionEnded) return;
+  sessionEnded = true;
+  hideCommentingNotice();
+  clearReference();
+  clearDraft();
+  try { sessionStorage.removeItem(submissionKey); } catch { /* Storage is optional. */ }
+  if (requestId) fetch('/confirm-close?t=' + token, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId }),
+    keepalive: true,
+  }).catch(() => {});
   document.body.innerHTML = '<div id="done"><h1>Feedback sent</h1>'
-    + '<p>' + detail + '</p><p>You can close this tab.</p></div>';
+    + '<p>The feedback was delivered. The session is closed.</p><p>You can close this tab.</p></div>';
 }
 </script>
 </body>

@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { get } from 'node:http';
 import test from 'node:test';
+import { cleanupAfter, startBrowser, stopChild } from '../test-support/browser.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = join(ROOT, 'bin', 'redpen.mjs');
@@ -16,26 +16,22 @@ function chromePath() {
   }
   return null;
 }
-function json(url) { return new Promise((resolveJson, reject) => get(url, (res) => { let body = ''; res.on('data', (chunk) => { body += chunk; }); res.on('end', () => { try { resolveJson(JSON.parse(body)); } catch (error) { reject(error); } }); }).on('error', reject)); }
 function waitFor(check, timeout = 10000) { return new Promise((resolveWait, reject) => { const end = Date.now() + timeout; const tick = async () => { try { const value = await check(); if (value) return resolveWait(value); if (Date.now() > end) throw new Error(`timed out: ${check}`); } catch (error) { if (Date.now() > end) return reject(error); } setTimeout(tick, 40); }; tick(); }); }
-class Cdp {
-  constructor(socket) { this.socket = socket; this.id = 0; this.pending = new Map(); this.events = []; socket.addEventListener('message', (event) => { const message = JSON.parse(event.data); if (message.id) { const pending = this.pending.get(message.id); this.pending.delete(message.id); message.error ? pending.reject(new Error(message.error.message)) : pending.resolve(message.result); } else this.events.push(message); }); }
-  send(method, params = {}, sessionId) { return new Promise((resolveSend, reject) => { const id = ++this.id; this.pending.set(id, { resolve: resolveSend, reject }); this.socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); }); }
-  close() { this.socket.close(); }
-}
 async function server(temp, name, text) {
   const documents = join(temp, 'documents'); mkdirSync(documents, { recursive: true });
   const file = join(documents, name); writeFileSync(file, text);
   const child = spawn(process.execPath, [CLI, file, '--no-open'], { env: { ...process.env, HOME: join(temp, 'home'), XDG_CONFIG_HOME: join(temp, 'config') }, stdio: ['ignore', 'pipe', 'pipe'] });
   let stderr = ''; let stdout = '';
+  const exited = new Promise((resolveExit) => child.once('close', resolveExit));
   child.stdout.on('data', (chunk) => { stdout += chunk; });
   const base = await new Promise((resolveBase, reject) => { const timer = setTimeout(() => reject(new Error('server did not start')), 10000); child.stderr.on('data', (chunk) => { stderr += chunk; const match = stderr.match(/http:\/\/127\.0\.0\.1:\d+\/\?t=[a-f0-9]+/); if (match) { clearTimeout(timer); resolveBase(match[0]); } }); child.once('exit', (code) => reject(new Error(`server exited ${code}`))); });
-  return { base, output: () => stdout, exited: new Promise((resolveExit) => child.once('exit', resolveExit)), stop: () => child.kill() };
+  return { base, output: () => stdout, exited, stop: () => stopChild(child, exited) };
 }
 
 test('server removes unsafe text element locations', async (t) => {
-  const temp = mkdtempSync(join(tmpdir(), 'redpen-text-location-server-')); t.after(() => rmSync(temp, { recursive: true, force: true }));
-  const session = await server(temp, 'review.html', '<p>review</p>'); t.after(() => session.stop());
+  const cleanup = cleanupAfter(t);
+  const temp = mkdtempSync(join(tmpdir(), 'redpen-text-location-server-')); cleanup(() => rmSync(temp, { recursive: true, force: true }));
+  const session = await server(temp, 'review.html', '<p>review</p>'); cleanup(() => session.stop());
   const response = await fetch(new URL('/submit' + new URL(session.base).search, session.base), {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ action: 'close', general: '', annotations: [
@@ -54,20 +50,17 @@ test('server removes unsafe text element locations', async (t) => {
 test('HTML text locations persist without changing other annotation kinds', { timeout: 90000 }, async (t) => {
   const chrome = chromePath();
   if (!chrome || typeof WebSocket !== 'function') return t.skip('Chrome or global WebSocket is unavailable');
-  const temp = mkdtempSync(join(tmpdir(), 'redpen-text-location-')); t.after(() => rmSync(temp, { recursive: true, force: true }));
+  const cleanup = cleanupAfter(t);
+  const temp = mkdtempSync(join(tmpdir(), 'redpen-text-location-')); cleanup(() => rmSync(temp, { recursive: true, force: true }));
   const deep = '<div>'.repeat(100) + '<strong class="deep-target">deep selected words</strong>' + '</div>'.repeat(100);
   const html = await server(temp, 'review.html', `<!doctype html><body><article id="shared" class="article-card" role="article"><p>Before <strong id="NestedID" class="author-note">nested selected words</strong> after.</p><p><strong id="123Target" class="digit-id">digit id text</strong></p><p><em>spanning first</em> and <b>spanning second</b></p>${deep}</article></body>`);
-  t.after(() => html.stop());
-  const port = 35000 + Math.floor(Math.random() * 20000);
-  const browser = spawn(chrome, [`--remote-debugging-port=${port}`, `--user-data-dir=${join(temp, 'profile')}`, '--headless=new', '--no-first-run', '--no-default-browser-check', 'about:blank'], { stdio: 'ignore' }); t.after(() => browser.kill());
-  const version = await waitFor(() => json(`http://127.0.0.1:${port}/json/version`).catch(() => null));
-  const socket = new WebSocket(version.webSocketDebuggerUrl); await new Promise((resolveOpen, reject) => { socket.addEventListener('open', resolveOpen, { once: true }); socket.addEventListener('error', reject, { once: true }); });
-  const cdp = new Cdp(socket); t.after(() => cdp.close());
+  cleanup(() => html.stop());
+  const cdp = await startBrowser(chrome, join(temp, 'profile'), cleanup);
   const target = await cdp.send('Target.createTarget', { url: 'about:blank' }); const { sessionId } = await cdp.send('Target.attachToTarget', { targetId: target.targetId, flatten: true });
   await cdp.send('Page.enable', {}, sessionId); await cdp.send('Runtime.enable', {}, sessionId); await cdp.send('Network.enable', {}, sessionId);
   const value = (code) => cdp.send('Runtime.evaluate', { expression: code, awaitPromise: true, returnByValue: true }, sessionId).then((result) => result.result.value);
   await cdp.send('Page.navigate', { url: html.base }, sessionId);
-  await waitFor(() => value('document.querySelector("#doc iframe")?.contentDocument?.querySelector("#NestedID")'));
+  await waitFor(() => value('connected && document.querySelector("#doc iframe")?.contentDocument?.querySelector("#NestedID")'));
   assert.equal(await value('document.querySelector("#block-toggle").checked'), true);
   await value('document.querySelector("#block-toggle").click()');
   assert.equal(await value('document.querySelector("#block-toggle").checked'), false);
@@ -89,12 +82,12 @@ test('HTML text locations persist without changing other annotation kinds', { ti
   assert.deepEqual(await value('annotations[1].elementLocation'), { selector: 'body > article:nth-of-type(1) > p:nth-of-type(2) > strong:nth-of-type(1)', tag: 'strong', role: '', id: '123Target', classes: ['digit-id'] });
   await value('document.documentElement.dataset.redpenBeforeReload="true"; location.reload()');
   await waitFor(() => value('!document.documentElement.dataset.redpenBeforeReload && document.readyState === "complete" && annotations.length === 2 && annotations[1].elementLocation?.selector === "body > article:nth-of-type(1) > p:nth-of-type(2) > strong:nth-of-type(1)" && annotations[1].elementLocation?.id === "123Target"'));
-  await value('(() => { const key=[...Array(sessionStorage.length)].map((_,i)=>sessionStorage.key(i)).find((key)=>key.startsWith("redpen-draft:")); const draft=JSON.parse(sessionStorage.getItem(key)); draft.annotations[0].elementLocation.selector="body > article:nth-of-type(1) > p:nth-of-type(1)"; sessionStorage.setItem(key,JSON.stringify(draft)); location.reload(); })()');
-  await waitFor(() => value('document.readyState === "complete" && annotations.length === 2'));
+  await value('(() => { const key=[...Array(sessionStorage.length)].map((_,i)=>sessionStorage.key(i)).find((key)=>key.startsWith("redpen-draft:")); const draft=JSON.parse(sessionStorage.getItem(key)); draft.annotations[0].elementLocation.selector="body > article:nth-of-type(1) > p:nth-of-type(1)"; sessionStorage.setItem(key,JSON.stringify(draft)); document.documentElement.dataset.redpenBeforeReload="true"; location.reload(); })()');
+  await waitFor(() => value('!document.documentElement.dataset.redpenBeforeReload && document.readyState === "complete" && annotations.length === 2'));
   assert.equal(await value('"elementLocation" in annotations[0]'), false);
   assert.equal(await value('[...document.querySelectorAll("#list .element-context")].some((node) => node.textContent === "body > article:nth-of-type(1) > p:nth-of-type(1)")'), false);
-  await value('(() => { const key=[...Array(sessionStorage.length)].map((_,i)=>sessionStorage.key(i)).find((key)=>key.startsWith("redpen-draft:")); const draft=JSON.parse(sessionStorage.getItem(key)); draft.annotations[0].elementLocation={selector:"body #NestedID",tag:"forged",role:"wrong",id:"wrong",classes:["wrong"]}; sessionStorage.setItem(key,JSON.stringify(draft)); location.reload(); })()');
-  await waitFor(() => value('document.readyState === "complete" && annotations.length === 2 && annotations[0].elementLocation?.selector === "body #NestedID" && annotations[0].elementLocation?.tag === "strong" && annotations[0].elementLocation?.id === "NestedID" && document.querySelector("#list .element-context")?.textContent === "body #NestedID"'));
+  await value('(() => { const key=[...Array(sessionStorage.length)].map((_,i)=>sessionStorage.key(i)).find((key)=>key.startsWith("redpen-draft:")); const draft=JSON.parse(sessionStorage.getItem(key)); draft.annotations[0].elementLocation={selector:"body #NestedID",tag:"forged",role:"wrong",id:"wrong",classes:["wrong"]}; sessionStorage.setItem(key,JSON.stringify(draft)); document.documentElement.dataset.redpenBeforeReload="true"; location.reload(); })()');
+  await waitFor(() => value('!document.documentElement.dataset.redpenBeforeReload && document.readyState === "complete" && annotations.length === 2 && annotations[0].elementLocation?.selector === "body #NestedID" && annotations[0].elementLocation?.tag === "strong" && annotations[0].elementLocation?.id === "NestedID" && document.querySelector("#list .element-context")?.textContent === "body #NestedID"'));
   await value('document.querySelector("#block-toggle").click()');
   await value('(() => { const f=document.querySelector("#doc iframe"), d=f.contentDocument, one=d.querySelector("em").firstChild, two=d.querySelector("b").firstChild, r=d.createRange(), s=f.contentWindow.getSelection(); r.setStart(one, 0); r.setEnd(two, two.length); s.removeAllRanges(); s.addRange(r); one.parentElement.dispatchEvent(new f.contentWindow.MouseEvent("mouseup", {bubbles:true})); })()');
   await waitFor(() => value('!document.querySelector("#add-btn").hidden'));
@@ -127,9 +120,9 @@ test('HTML text locations persist without changing other annotation kinds', { ti
   assert.doesNotMatch(JSON.stringify(submittedLocations), /text|html|data-|token|nonce|url/i);
 
   for (const [name, text] of [['review.md', '# Markdown\n\nmarkdown annotation'], ['review.txt', 'plain annotation']]) {
-    const other = await server(temp, name, text); t.after(() => other.stop());
+    const other = await server(temp, name, text); cleanup(() => other.stop());
     await cdp.send('Page.navigate', { url: other.base }, sessionId);
-    await waitFor(() => value(name.endsWith('.md') ? 'document.querySelector("#doc p")' : 'document.querySelector("#doc pre.plain")'));
+    await waitFor(() => value(name.endsWith('.md') ? 'connected && document.querySelector("#doc p")' : 'connected && document.querySelector("#doc pre.plain")'));
     const selector = name.endsWith('.md') ? '#doc p' : '#doc pre.plain';
     await value(`(() => { const e=document.querySelector(${JSON.stringify(selector)}), n=e.firstChild, r=document.createRange(), s=getSelection(); r.setStart(n,0); r.setEnd(n,Math.min(8,n.length)); s.removeAllRanges(); s.addRange(r); e.dispatchEvent(new MouseEvent('mouseup',{bubbles:true})); })()`);
     await waitFor(() => value('!document.querySelector("#add-btn").hidden'));

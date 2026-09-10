@@ -5,32 +5,46 @@ description: Collect inline comments or annotations on a supported document. Pre
 
 # redpen
 
-redpen opens a supported document in the user's browser for annotation. The CLI
-blocks until the user submits feedback, then prints the feedback to stdout.
+RedPen opens a document for annotation and conversation in the browser. Each
+foreground command waits for one submission. The review page stays open between
+turns, with read-only submitted comments and agent replies.
 
 Supported files are `.txt`, `.md`, `.markdown`, `.html`, `.htm`, and
 extensionless UTF-8 text files. Refuse every other extension, including
-`.mdx`, before running the command. Use this skill when a supported document
-needs interactive annotation.
+`.mdx`, before running the command.
 
-## Steps
+## Start a review
 
-1. Identify the target file from the arguments or the conversation. It must exist on disk and use a supported format.
-2. Run `redpen "<file>"` with the shell tool. Use a timeout of at least 30 minutes, or run it in the background and wait for it to exit. It blocks while the user annotates in the browser; this is normal. Do not kill it.
-3. When it exits, read its stdout. The first line is the decision.
+1. Identify the existing target file and check its format.
+2. Run `redpen "<file>"` with the shell tool. Use a timeout of at least 30 minutes, or run it in the background and wait for it to exit. Waiting while the user reviews is normal. Do not kill it.
+3. Read the feedback from stdout. `ACTION` is the user's choice. `FILE` is the document. `SESSION` is the local review URL. `TURN` is the submitted message number.
 
 ## ACTION: revise
 
-- Revise the file. Address the general comment and every annotation.
-- Each annotation has a Quote and a Comment. Quotes come from rendered content, so Markdown syntax may be missing. Find the matching passage in the source file.
-- If a quote appears several times, the annotation includes surrounding context.
-- Afterwards, run `redpen "<file>"` again without asking, and repeat this workflow for every later `ACTION: revise` response.
+1. Address the general message and every annotation. Answer questions without editing the document unless a change is needed or requested. Quotes come from rendered content, so Markdown syntax may be missing. Use surrounding context when a quote appears more than once.
+2. Make any requested document changes.
+3. Reply **inside RedPen**, not only in the agent's normal chat. For edits, give a one- or two-line summary. Answer questions in the detail they need. A text-only reply is valid.
+4. Run `redpen reply "<SESSION>" --turn <TURN> --message "<reply>"`. Quote shell arguments safely. For longer replies, write a temporary UTF-8 file and use `--message-file "<path>"` instead of `--message`.
+5. After reply delivery succeeds, run `redpen wait "<SESSION>" --after <TURN>`. Use the same waiting rules as the initial command. Repeat for each later submission. Do not reopen RedPen or create another browser tab.
+
+A reply updates the document in the existing review page. The user can draft
+messages while waiting. Document commenting pauses until the reply and any
+document update finish loading. Submitted comments cannot be edited. If reply delivery
+is uncertain, retry the same turn and text. Identical retries do not create
+another message. Waiting again with the same `--after` value returns the same
+next submission, so do not apply feedback twice.
 
 ## ACTION: close
 
-- Revise the file. Address the general comment and every annotation using the same rules as `ACTION: revise`.
-- List the changes briefly, then stop. Do not run redpen again.
+Address the general message and every annotation. Make requested changes and
+answer questions. Report the result briefly in the normal agent chat, then stop.
+The review session has ended. Do not reopen RedPen or send another session reply.
 
-## Empty output or non-zero exit
+## Failure or cancellation
 
-- The user cancelled or the command failed. Report that and stop.
+If a command fails, report the problem without claiming delivery. Keep the
+session URL and turn number for recovery. Do not silently start a new session
+and lose the conversation. To recover interrupted delivery, run
+`redpen wait "<SESSION>" --after <last-completed-turn>`. Use `--after 0` if no
+turn has been completed. Empty feedback output or a non-zero wait exit means
+the wait failed or was cancelled.

@@ -16,6 +16,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import postcss from 'postcss';
 import valueParser from 'postcss-value-parser';
+import { createReviewSession, sessionCommand, startReview } from './review-session.mjs';
 
 const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const VERSION = JSON.parse(readFileSync(join(PKG_ROOT, 'package.json'), 'utf8')).version;
@@ -64,6 +65,9 @@ const AGENTS = {
 main(process.argv.slice(2));
 
 function main(argv) {
+  const [cmd, ...rest] = argv;
+  // Reply text is data, even when the whole message is a CLI flag.
+  if (cmd === 'reply' || cmd === 'wait') return sessionCommand(cmd, rest).catch((error) => fail(error.message));
   if (argv.includes('--version') || argv.includes('-v')) {
     console.log(VERSION);
     return;
@@ -72,10 +76,10 @@ function main(argv) {
     printHelp();
     return;
   }
-  const [cmd, ...rest] = argv;
   if (cmd === 'install') return install(rest);
   if (cmd === 'uninstall') return uninstall(rest);
-  serve(argv);
+  if (cmd === '__serve' && process.send) return serve(rest);
+  startReview(fileURLToPath(import.meta.url), argv);
 }
 
 function printHelp() {
@@ -84,6 +88,11 @@ function printHelp() {
 Usage:
   redpen <file> [options]         Open <file> for annotation; block until the
                                   user submits; print the feedback to stdout.
+  redpen reply <session> --turn <n> --message <text>
+                                  Reply in the same review page. Use
+                                  --message-file <path> for longer replies.
+  redpen wait <session> --after <n>
+                                  Wait for feedback after turn <n>.
   redpen install <agent...>       Install the RedPen skill for agents.
   redpen uninstall <agent...>     Remove it again.
 
@@ -99,6 +108,9 @@ Options:
 Accepted files: ${ACCEPTED_FORMATS}.
 
 Output starts with "ACTION: revise" or "ACTION: close".
+SESSION and TURN identify the review page and submitted message.
+After revise, reply in that session, then wait for the next turn.
+Close ends the session.
 `);
 }
 
@@ -152,16 +164,39 @@ function serve(args) {
   } catch (error) {
     fail(`cannot resolve document directory: ${error.message}`);
   }
+  const realFilePath = realpathSync(filePath);
   const token = randomBytes(16).toString('hex');
   const resourceState = { token, cssRequests: new Set(), cssPaths: new Set(), cssBytes: 0, cssEdges: new Map(), warnings: new Map() };
   const html = readFileSync(join(PKG_ROOT, 'ui', 'index.html'), 'utf8').replaceAll('__REDPEN_TOKEN__', token);
   const markedJs = readFileSync(join(PKG_ROOT, 'ui', 'marked.min.js'), 'utf8');
   const mermaidJs = readFileSync(join(PKG_ROOT, 'ui', 'mermaid.min.js'), 'utf8');
+  const favicon = readFileSync(join(PKG_ROOT, 'ui', 'pen.svg'), 'utf8');
+  const session = createReviewSession({
+    formatReport: (feedback) => formatReport(feedback, filePath),
+    reloadDocument() {
+      if (realpathSync(filePath) !== realFilePath) throw new Error('document target changed');
+      const updated = new TextDecoder('utf-8', { fatal: true }).decode(readFileSync(filePath));
+      if (updated.includes('\0')) throw new Error('binary content');
+      text = updated;
+      for (const value of Object.values(resourceState)) if (value instanceof Map || value instanceof Set) value.clear();
+      resourceState.cssBytes = 0;
+    },
+    onFeedback(report) {
+      if (out) writeFileSync(resolve(out), report);
+      if (process.connected) process.send({ type: 'feedback', report });
+    },
+  });
+  process.on('disconnect', () => { if (!session.submitted) process.exit(0); });
 
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     // Do not accept a token mixed with additional query parameters.
     if (url.search !== `?t=${token}`) return send(res, 403, 'text/plain', 'forbidden');
+    if (req.headers.origin && req.headers.origin !== `http://127.0.0.1:${server.address().port}`) {
+      return send(res, 403, 'text/plain', 'forbidden');
+    }
+    if (session.handle(req, res, url.pathname)) return;
+    if (req.method === 'GET' && url.pathname === '/pen.svg') return send(res, 200, 'image/svg+xml', favicon);
     if (req.method === 'GET' && url.pathname === '/marked.min.js') {
       return send(res, 200, 'text/javascript; charset=utf-8', markedJs);
     }
@@ -186,11 +221,8 @@ function serve(args) {
       return handleThemeSetting(req, res);
     }
     if (req.method === 'GET' && url.pathname === '/doc') {
-      const body = JSON.stringify({ name: basename(filePath), path: filePath, rendering, text, base: '' });
+      const body = JSON.stringify({ name: basename(filePath), path: filePath, rendering, text, base: '', revision: session.revision });
       return send(res, 200, 'application/json', body);
-    }
-    if (req.method === 'POST' && url.pathname === '/submit') {
-      return handleSubmit(req, res);
     }
     send(res, 404, 'text/plain', 'not found');
   });
@@ -217,28 +249,9 @@ function serve(args) {
     });
   }
 
-  function handleSubmit(req, res) {
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; });
-    req.on('end', () => {
-      let feedback;
-      try {
-        feedback = JSON.parse(body);
-        if (!['revise', 'close'].includes(feedback.action)) throw new Error('bad action');
-      } catch {
-        return send(res, 400, 'text/plain', 'bad request');
-      }
-      const report = formatReport(feedback, filePath);
-      process.stdout.write(report);
-      if (out) writeFileSync(resolve(out), report);
-      process.stderr.write(`redpen: feedback received (${feedback.action})\n`);
-      res.on('finish', () => setTimeout(() => process.exit(0), 100));
-      send(res, 200, 'application/json', '{"ok":true}');
-    });
-  }
-
   server.listen(port, '127.0.0.1', () => {
     const link = `http://127.0.0.1:${server.address().port}/?t=${token}`;
+    session.setLink(link);
     process.stderr.write(`redpen: annotating ${filePath}\n`);
     process.stderr.write(`redpen: ${link}\n`);
     process.stderr.write('redpen: waiting for feedback from the browser...\n');
@@ -643,6 +656,7 @@ function formatReport({ action, general, annotations = [] }, filePath) {
       const elementTarget = annotation?.target === 'element';
       const context = elementTarget ? reportElementContext(annotation.context) : null;
       lines.push(`### Annotation ${index + 1}`, '');
+      if (annotation?.unavailable) lines.push('Reference unavailable: this comment refers to an earlier document version. Confirm its target before editing.', '');
       if (elementTarget) {
         const safe = context || { selector: '(unavailable)', tag: '(unavailable)', role: '', id: '', classes: [], text: '', html: '' };
         lines.push(
@@ -659,7 +673,9 @@ function formatReport({ action, general, annotations = [] }, filePath) {
       lines.push('Quote:', '');
       for (const line of quote.split('\n')) lines.push(`> ${line}`);
       lines.push('', 'Location:', '');
-      if (Number(annotation?.occurrences) > 1) {
+      if (annotation?.unavailable) {
+        lines.push('This quote no longer has a confirmed match.', '');
+      } else if (Number(annotation?.occurrences) > 1) {
         const before = reportText(annotation.prefix, 200);
         const after = reportText(annotation.suffix, 200);
         lines.push(`This quote appears ${Math.min(Number(annotation.occurrences), 10000)} times. This one follows "${before}" and precedes "${after}".`, '');
