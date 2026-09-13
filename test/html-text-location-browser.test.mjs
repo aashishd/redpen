@@ -16,7 +16,7 @@ function chromePath() {
   }
   return null;
 }
-function waitFor(check, timeout = 10000) { return new Promise((resolveWait, reject) => { const end = Date.now() + timeout; const tick = async () => { try { const value = await check(); if (value) return resolveWait(value); if (Date.now() > end) throw new Error(`timed out: ${check}`); } catch (error) { if (Date.now() > end) return reject(error); } setTimeout(tick, 40); }; tick(); }); }
+function waitFor(check, timeout = 20000) { return new Promise((resolveWait, reject) => { const end = Date.now() + timeout; const tick = async () => { try { const value = await check(); if (value) return resolveWait(value); if (Date.now() > end) throw new Error(`timed out: ${check}`); } catch (error) { if (Date.now() > end) return reject(error); } setTimeout(tick, 40); }; tick(); }); }
 async function server(temp, name, text) {
   const documents = join(temp, 'documents'); mkdirSync(documents, { recursive: true });
   const file = join(documents, name); writeFileSync(file, text);
@@ -25,23 +25,54 @@ async function server(temp, name, text) {
   const exited = new Promise((resolveExit) => child.once('close', resolveExit));
   child.stdout.on('data', (chunk) => { stdout += chunk; });
   const base = await new Promise((resolveBase, reject) => { const timer = setTimeout(() => reject(new Error('server did not start')), 10000); child.stderr.on('data', (chunk) => { stderr += chunk; const match = stderr.match(/http:\/\/127\.0\.0\.1:\d+\/\?t=[a-f0-9]+/); if (match) { clearTimeout(timer); resolveBase(match[0]); } }); child.once('exit', (code) => reject(new Error(`server exited ${code}`))); });
-  return { base, output: () => stdout, exited, stop: () => stopChild(child, exited) };
+  return { base, output: () => stdout, exited, async stop() {
+    const url = new URL(base);
+    const requestId = 'text-location-test-' + url.searchParams.get('t');
+    const post = (path, body) => fetch(new URL(path + url.search, url), {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      signal: AbortSignal.timeout(1000),
+    });
+    try {
+      const state = await (await fetch(new URL('/session' + url.search, url), { signal: AbortSignal.timeout(1000) })).json();
+      if (state.closed) {
+        const closeRequestId = state.history.at(-1)?.requestId;
+        if (closeRequestId) await post('/confirm-close', { requestId: closeRequestId });
+      } else {
+        if (state.waiting) await post('/reply', { turn: state.nextTurn - 1, message: 'Test cleanup.' });
+        const savedDraft = await (await fetch(new URL('/draft' + url.search, url), { signal: AbortSignal.timeout(1000) })).json();
+        if ((await post('/submit', { action: 'close', requestId, draftRevision: savedDraft.revision,
+          general: '', annotations: [] })).ok) await post('/confirm-close', { requestId });
+      }
+      for (let attempt = 0; attempt < 50; attempt++) {
+        try { await fetch(new URL('/session' + url.search, url), { signal: AbortSignal.timeout(100) }); }
+        catch { break; }
+        await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+      }
+    } catch { /* A completed path may already have stopped its worker. */ }
+    await stopChild(child, exited);
+  } };
 }
 
 test('server removes unsafe text element locations', async (t) => {
   const cleanup = cleanupAfter(t);
   const temp = mkdtempSync(join(tmpdir(), 'redpen-text-location-server-')); cleanup(() => rmSync(temp, { recursive: true, force: true }));
   const session = await server(temp, 'review.html', '<p>review</p>'); cleanup(() => session.stop());
+  const requestId = 'unsafe-location-close';
   const response = await fetch(new URL('/submit' + new URL(session.base).search, session.base), {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ action: 'close', general: '', annotations: [
+    body: JSON.stringify({ action: 'close', requestId, general: '', annotations: [
       { quote: 'review', comment: 'note', elementLocation: { selector: 'body #safe', tag: 'p', role: 'javascript:bad', id: 'safe', classes: ['ok', 'url(bad)'], text: 'leak', html: '<p>leak</p>' } },
       { quote: 'unsafe selector', comment: 'unsafe note', elementLocation: { selector: 'body #123Unsafe', tag: 'p', role: '', id: '123Unsafe', classes: [] } },
       { quote: 'id mismatch', comment: 'id mismatch note', elementLocation: { selector: 'body #safe', tag: 'p', role: '', id: 'other', classes: [] } },
       { quote: 'tag mismatch', comment: 'tag mismatch note', elementLocation: { selector: 'body > article:nth-of-type(1) > p:nth-of-type(2)', tag: 'strong', role: '', id: '', classes: [] } },
     ] }),
   });
-  assert.equal(response.status, 200); await session.exited;
+  assert.equal(response.status, 200);
+  const base = new URL(session.base);
+  assert.equal((await fetch(new URL('/confirm-close' + base.search, base), {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId }),
+  })).status, 200);
+  await session.exited;
   assert.match(session.output(), /Element Location:[\s\S]*Selector: body #safe[\s\S]*Role: \(none\)[\s\S]*Classes: ok/);
   assert.equal((session.output().match(/Element Location:/g) || []).length, 1);
   assert.doesNotMatch(session.output(), /javascript:|leak|url\(bad\)|123Unsafe/);
@@ -113,7 +144,8 @@ test('HTML text locations persist without changing other annotation kinds', { ti
   assert.match(report, /Element Context:/);
   assert.match(report, /forged location note/);
   assert.doesNotMatch(report.slice(report.indexOf('forged location note') - 500), /Element Location:/);
-  const payload = cdp.events.find((event) => event.method === 'Network.requestWillBeSent' && event.params.request.url.includes('/submit?t=')).params.request.postData;
+  const feedbackRequest = await waitFor(() => cdp.events.find((event) => event.method === 'Network.requestWillBeSent' && event.params.request.url.includes('/submit?t=')));
+  const payload = feedbackRequest.params.request.postData;
   const submittedLocations = JSON.parse(payload).annotations.filter((annotation) => annotation.elementLocation).map((annotation) => annotation.elementLocation);
   assert.deepEqual(submittedLocations, [nested[1], { selector: 'body > article:nth-of-type(1) > p:nth-of-type(2) > strong:nth-of-type(1)', tag: 'strong', role: '', id: '123Target', classes: ['digit-id'] }, { selector: 'body > article:nth-of-type(1) > p:nth-of-type(3)', tag: 'p', role: '', id: '', classes: [] }]);
   assert.equal(JSON.parse(payload).annotations.find((annotation) => annotation.comment === 'forged location note').elementLocation, undefined);

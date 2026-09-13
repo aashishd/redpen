@@ -50,6 +50,7 @@ async function startServer() {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stderr = '';
+  const exited = new Promise((resolve) => child.once('close', resolve));
   const ready = new Promise((resolveReady, reject) => {
     const timer = setTimeout(() => reject(new Error('server did not start')), 5000);
     child.stderr.on('data', (chunk) => {
@@ -64,7 +65,27 @@ async function startServer() {
   return {
     ...session,
     root,
-    stop() { child.kill(); rmSync(temp, { recursive: true, force: true }); },
+    async stop() {
+      const base = new URL(session.base);
+      const requestId = 'asset-test-close';
+      try {
+        const close = await fetch(new URL('/submit' + base.search, base), {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'close', requestId, general: '', annotations: [] }),
+        });
+        if (close.ok) await fetch(new URL('/confirm-close' + base.search, base), {
+          method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId }),
+        });
+        for (let attempt = 0; attempt < 50; attempt++) {
+          try { await fetch(new URL('/session' + base.search, base), { signal: AbortSignal.timeout(100) }); }
+          catch { break; }
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      } catch { /* A failed test may already have stopped its server. */ }
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      await exited;
+      rmSync(temp, { recursive: true, force: true });
+    },
   };
 }
 

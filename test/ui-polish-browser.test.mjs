@@ -80,7 +80,12 @@ for (const format of ['html', 'md', 'txt']) {
           const state = await api('/session');
           if (state.waiting) await api('/reply', { turn: state.nextTurn - 1, message: 'Test cleanup.' });
           if (state.closed) await api('/confirm-close', { requestId: state.history.at(-1)?.requestId });
-          else await api('/submit', { action: 'close', general: '', annotations: [] });
+          else {
+            const savedDraft = await api('/draft');
+            const requestId = 'ui-polish-test-cleanup';
+            await api('/submit', { action: 'close', requestId, draftRevision: savedDraft.revision, general: '', annotations: [] });
+            await api('/confirm-close', { requestId });
+          }
         }
       } finally { await stopChild(initial, exited); }
     });

@@ -77,10 +77,19 @@ no CDN, runtime fetch, or external network request. In the browser you can:
   - **Send for review**: the agent answers questions or edits the document, then replies in the same review page. Submitted document marks disappear. Comments stay in collapsed history and cannot be edited.
   - **Send feedback and exit**: the agent addresses the feedback and reports the result in its normal chat. RedPen ends the review session.
 
-History survives page refreshes and review rounds in that session. It is not
-saved for future sessions. Document updates keep drafts. **Show in document**
-scrolls to an unchanged reference and briefly outlines it. A reference that no
-longer matches shows muted **Original text changed** text instead of a link.
+Saved comments, draft messages, and conversation history survive page refreshes,
+foreground command timeouts, and worker crashes. RedPen keeps one unfinished
+session for each document until **Send feedback and exit**. Running
+`redpen <file>` again resumes that session. A worker restart creates a new local
+URL. Document updates keep drafts. **Show in document** scrolls to an unchanged
+reference and briefly outlines it. A reference that no longer matches shows
+muted **Original text changed** text instead of a link.
+
+Browsers opened on the same session URL share saved comments and draft messages.
+Changes appear in another browser after a short polling delay. If two browsers
+write from the same older draft, RedPen rejects the stale write instead of
+silently replacing newer comments. The stale browser keeps its local copy and
+asks for a reload.
 
 On submit, the foreground command prints a report to stdout and exits. For
 `revise`, the local server stays running so the same page can receive a reply:
@@ -131,16 +140,17 @@ same next report; agents must not apply feedback twice. If the foreground
 command is interrupted after submission, use `redpen wait "<SESSION>" --after 0`
 to recover the first report, or supply the last completed turn for a later one.
 
-The server holds conversation history in memory until **Send feedback and
-exit**. It keeps running if the browser tab is closed without that action, so
-reopen the session URL to finish the review. Stopping the initial command before
-any feedback also stops its server.
+RedPen saves an unfinished session in a private local file until **Send feedback
+and exit**. It keeps running if the browser tab or foreground command closes, so
+reopen the session URL to finish the review. If the worker stops, run
+`redpen <file>` again to restore the saved comments and history at a new URL.
 
-The theme choice is shared by future RedPen sessions. Set `XDG_CONFIG_HOME` to
-store it in `$XDG_CONFIG_HOME/redpen/settings.json` on any platform. Without
-that override, RedPen uses `~/Library/Application Support/redpen/settings.json`
-on macOS, `%APPDATA%\redpen\settings.json` on Windows, or
-`~/.config/redpen/settings.json` on other systems.
+The theme choice and unfinished sessions use the RedPen application-data
+directory. Set `XDG_CONFIG_HOME` to use `$XDG_CONFIG_HOME/redpen` on any
+platform. Without that override, RedPen uses `~/Library/Application
+Support/redpen` on macOS, `%APPDATA%\redpen` on Windows, or
+`~/.config/redpen` on other systems. Session files use private permissions and
+are removed after **Send feedback and exit**.
 
 Options: `--out <file>` also writes the report to a file, `--port <n>` fixes
 the port, and `--no-open` prints the URL without opening a browser.
@@ -175,5 +185,5 @@ document annotation.
 
 ## Non-goals
 
-No diff or PR review, no sharing, no saved cross-session history, no hooks,
-no build step.
+No diff or PR review, no network sharing, no saved completed-session history,
+no hooks, no build step.

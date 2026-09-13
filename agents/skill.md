@@ -16,8 +16,8 @@ extensionless UTF-8 text files. Refuse every other extension, including
 ## Start a review
 
 1. Identify the existing target file and check its format.
-2. Run `redpen "<file>"` with the shell tool. Use a timeout of at least 30 minutes, or run it in the background and wait for it to exit. Waiting while the user reviews is normal. Do not kill it.
-3. Read the feedback from stdout. `ACTION` is the user's choice. `FILE` is the document. `SESSION` is the local review URL. `TURN` is the submitted message number.
+2. Run `redpen "<file>"` with the shell tool. Use the longest practical timeout, or run it in the background and wait for it to exit. Waiting while the user reviews is normal. Do not kill it intentionally. A tool timeout does not end the saved browser session.
+3. Read the feedback from stdout. `ACTION` is the user's choice. `FILE` is the document. `SESSION` is the local review URL. `TURN` is the submitted message number. If the command times out, run `redpen "<file>"` again. It resumes the unfinished session without losing saved comments.
 
 ## ACTION: revise
 
@@ -43,8 +43,9 @@ The review session has ended. Do not reopen RedPen or send another session reply
 ## Failure or cancellation
 
 If a command fails, report the problem without claiming delivery. Keep the
-session URL and turn number for recovery. Do not silently start a new session
-and lose the conversation. To recover interrupted delivery, run
-`redpen wait "<SESSION>" --after <last-completed-turn>`. Use `--after 0` if no
-turn has been completed. Empty feedback output or a non-zero wait exit means
-the wait failed or was cancelled.
+session URL and turn number for recovery. Use
+`redpen wait "<SESSION>" --after <last-completed-turn>` while the URL works.
+Use `--after 0` if no turn has been completed. If the local URL no longer works,
+run `redpen "<file>"` again. RedPen restores that document's unfinished session
+at a new URL. Empty feedback output or a non-zero wait exit means the wait
+failed or was cancelled.

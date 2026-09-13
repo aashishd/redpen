@@ -11,12 +11,12 @@ import {
 } from 'node:fs';
 import { basename, dirname, extname, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import postcss from 'postcss';
 import valueParser from 'postcss-value-parser';
-import { createReviewSession, sessionCommand, startReview } from './review-session.mjs';
+import { createReviewSession, sessionCommand, sessionUrl, startReview } from './review-session.mjs';
 
 const PKG_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const VERSION = JSON.parse(readFileSync(join(PKG_ROOT, 'package.json'), 'utf8')).version;
@@ -25,6 +25,7 @@ const HTML_EXTS = ['.html', '.htm'];
 const TEXT_EXTS = ['.txt'];
 const ACCEPTED_FORMATS = '.txt, .md, .markdown, .html, .htm, or an extensionless UTF-8 text file';
 const SETTINGS_FILE = settingsFile();
+const SESSIONS_DIR = join(dirname(SETTINGS_FILE), 'sessions');
 const IMAGE_TYPES = new Map([
   ['.png', 'image/png'], ['.jpg', 'image/jpeg'], ['.jpeg', 'image/jpeg'],
   ['.gif', 'image/gif'], ['.webp', 'image/webp'], ['.avif', 'image/avif'], ['.svg', 'image/svg+xml'],
@@ -79,7 +80,7 @@ function main(argv) {
   if (cmd === 'install') return install(rest);
   if (cmd === 'uninstall') return uninstall(rest);
   if (cmd === '__serve' && process.send) return serve(rest);
-  startReview(fileURLToPath(import.meta.url), argv);
+  runReview(argv).catch((error) => fail(error.message));
 }
 
 function printHelp() {
@@ -121,7 +122,7 @@ function fail(msg) {
 
 // ---------------------------------------------------------------- serve
 
-function serve(args) {
+function reviewOptions(args) {
   let file;
   let out;
   let port = 0;
@@ -138,14 +139,137 @@ function serve(args) {
   if (!file) fail('no file given (usage: redpen <file>)');
   if (out === undefined && args.includes('--out')) fail('--out needs a file path');
   if (Number.isNaN(port)) fail('--port needs a number');
-
   const filePath = resolve(file);
   if (!existsSync(filePath)) fail(`file not found: ${filePath}`);
   const extension = extname(filePath).toLowerCase();
   if (extension && !MARKDOWN_EXTS.includes(extension) && !HTML_EXTS.includes(extension)
-    && !TEXT_EXTS.includes(extension)) {
-    fail(`unsupported file type; accepted formats: ${ACCEPTED_FORMATS}`);
+    && !TEXT_EXTS.includes(extension)) fail(`unsupported file type; accepted formats: ${ACCEPTED_FORMATS}`);
+  return { filePath, extension, out, port, open };
+}
+
+function sessionStateFile(realFilePath) {
+  return join(SESSIONS_DIR, createHash('sha256').update(realFilePath).digest('hex') + '.json');
+}
+
+function validateSessionRecord(record, realFilePath) {
+  if (!record || record.version !== 1 || record.file !== realFilePath || !Number.isSafeInteger(record.pid) || record.pid < 1) {
+    throw new Error('saved data is invalid');
   }
+  if (record.starting === true) return record;
+  if (typeof record.link !== 'string' || !record.state || typeof record.state !== 'object') throw new Error('saved data is invalid');
+  sessionUrl(record.link);
+  return record;
+}
+
+function readSessionRecord(realFilePath, path = sessionStateFile(realFilePath)) {
+  try { return validateSessionRecord(JSON.parse(readFileSync(path, 'utf8')), realFilePath); }
+  catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw new Error(`cannot recover the unfinished review: ${error.message}`);
+  }
+}
+
+function processRunning(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return error.code !== 'ESRCH'; }
+}
+
+function sessionClaimFiles(realFilePath) {
+  const name = basename(sessionStateFile(realFilePath)) + '.claim-';
+  try { return readdirSync(SESSIONS_DIR).filter((entry) => entry.startsWith(name)).map((entry) => join(SESSIONS_DIR, entry)); }
+  catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+}
+
+function claimSessionRecord(realFilePath) {
+  mkdirSync(SESSIONS_DIR, { recursive: true, mode: 0o700 });
+  const destination = sessionStateFile(realFilePath);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const existing = readSessionRecord(realFilePath);
+    if (existing?.starting) {
+      if (processRunning(existing.pid)) throw new Error('another review session is already starting for this document');
+      rmSync(destination, { force: true });
+      continue;
+    }
+    if (existing) {
+      if (processRunning(existing.pid)) throw new Error('another review session is already running for this document');
+      const claim = `${destination}.claim-${process.pid}-${randomBytes(6).toString('hex')}`;
+      try { renameSync(destination, claim); }
+      catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+      return { record: readSessionRecord(realFilePath, claim), claim };
+    }
+    const claims = sessionClaimFiles(realFilePath);
+    const liveClaim = claims.find((path) => {
+      const pid = Number(path.match(/\.claim-(\d+)-/)?.[1]);
+      return Number.isSafeInteger(pid) && processRunning(pid);
+    });
+    if (liveClaim) throw new Error('another review session is already recovering this document');
+    if (claims.length) {
+      try { renameSync(claims[0], destination); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      continue;
+    }
+    let descriptor;
+    try {
+      descriptor = openSync(destination, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
+      writeFileSync(descriptor, JSON.stringify({ version: 1, file: realFilePath, pid: process.pid, starting: true }) + '\n');
+      closeSync(descriptor);
+      return { record: null, claim: null };
+    } catch (error) {
+      if (descriptor !== undefined) closeSync(descriptor);
+      if (error.code === 'EEXIST') continue;
+      throw error;
+    }
+  }
+  throw new Error('another review session is already starting for this document');
+}
+
+function clearSessionClaims(realFilePath) {
+  for (const path of sessionClaimFiles(realFilePath)) rmSync(path, { force: true });
+}
+
+function writeSessionRecord(realFilePath, link, state) {
+  mkdirSync(SESSIONS_DIR, { recursive: true, mode: 0o700 });
+  const destination = sessionStateFile(realFilePath);
+  const temporary = join(SESSIONS_DIR, `.session-${process.pid}-${randomBytes(6).toString('hex')}.tmp`);
+  try {
+    writeFileSync(temporary, JSON.stringify({ version: 1, file: realFilePath, link, pid: process.pid, state }) + '\n', { mode: 0o600 });
+    renameSync(temporary, destination);
+  } finally {
+    if (existsSync(temporary)) rmSync(temporary);
+  }
+}
+
+async function runReview(args) {
+  const options = reviewOptions(args);
+  const realFilePath = realpathSync(options.filePath);
+  const record = readSessionRecord(realFilePath);
+  if (record?.starting && processRunning(record.pid)) throw new Error('a review session is already starting for this document');
+  if (record && !record.starting) {
+    try {
+      const url = sessionUrl(record.link);
+      const [sessionResponse, documentResponse] = await Promise.all([
+        fetch(new URL('/session' + url.search, url), { signal: AbortSignal.timeout(1500) }),
+        fetch(new URL('/doc' + url.search, url), { signal: AbortSignal.timeout(1500) }),
+      ]);
+      if (!sessionResponse.ok || !documentResponse.ok) throw new Error('session unavailable');
+      const state = await sessionResponse.json();
+      const document = await documentResponse.json();
+      if (realpathSync(document.path) !== realFilePath) throw new Error('saved session points to another document');
+      process.stderr.write(`redpen: resuming ${options.filePath}\nredpen: ${url.href}\nredpen: waiting for feedback from the browser...\n`);
+      if (options.open) openBrowser(url.href);
+      const after = state.waiting || state.closed ? Math.max(0, state.nextTurn - 2) : state.nextTurn - 1;
+      await sessionCommand('wait', [url.href, '--after', String(after)]);
+      return;
+    } catch (error) {
+      if (error.message === 'saved session points to another document') throw error;
+      if (processRunning(record.pid)) throw new Error('the saved review session is running but not responding');
+      // The durable state below starts a replacement worker and URL.
+    }
+  }
+  startReview(fileURLToPath(import.meta.url), args);
+}
+
+function serve(args) {
+  const { filePath, extension, out, port, open } = reviewOptions(args);
   let text;
   try {
     const bytes = readFileSync(filePath);
@@ -165,6 +289,9 @@ function serve(args) {
     fail(`cannot resolve document directory: ${error.message}`);
   }
   const realFilePath = realpathSync(filePath);
+  const claimedSession = claimSessionRecord(realFilePath);
+  const savedSession = claimedSession.record;
+  let sessionLink = savedSession?.link || '';
   const token = randomBytes(16).toString('hex');
   const resourceState = { token, cssRequests: new Set(), cssPaths: new Set(), cssBytes: 0, cssEdges: new Map(), warnings: new Map() };
   const html = readFileSync(join(PKG_ROOT, 'ui', 'index.html'), 'utf8').replaceAll('__REDPEN_TOKEN__', token);
@@ -185,8 +312,10 @@ function serve(args) {
       if (out) writeFileSync(resolve(out), report);
       if (process.connected) process.send({ type: 'feedback', report });
     },
+    initialState: savedSession?.state || null,
+    persistState(state) { writeSessionRecord(realFilePath, sessionLink, state); },
+    clearState() { rmSync(sessionStateFile(realFilePath), { force: true }); },
   });
-  process.on('disconnect', () => { if (!session.submitted) process.exit(0); });
 
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
@@ -251,11 +380,15 @@ function serve(args) {
 
   server.listen(port, '127.0.0.1', () => {
     const link = `http://127.0.0.1:${server.address().port}/?t=${token}`;
+    sessionLink = link;
     session.setLink(link);
+    clearSessionClaims(realFilePath);
     process.stderr.write(`redpen: annotating ${filePath}\n`);
     process.stderr.write(`redpen: ${link}\n`);
     process.stderr.write('redpen: waiting for feedback from the browser...\n');
     if (open) openBrowser(link);
+    const pendingReport = session.pendingReport;
+    if (pendingReport && process.connected) process.send({ type: 'feedback', report: pendingReport });
   });
 }
 

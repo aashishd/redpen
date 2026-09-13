@@ -464,6 +464,7 @@
 
 const token = new URLSearchParams(location.search).get('t');
 const draftKey = 'redpen-draft:' + token;
+const draftRevisionKey = 'redpen-draft-revision:' + token;
 const paneKey = 'redpen-comments-collapsed:' + token;
 const submissionKey = 'redpen-submission:' + token;
 const docEl = document.getElementById('doc');
@@ -519,6 +520,12 @@ let historySignature = '';
 let referenceTarget = null;
 let referenceTimer = null;
 let commentingNoticeTimer = null;
+let sharedDraftRevision = 0;
+let sharedDraftDirty = false;
+let sharedDraftConflict = false;
+let pendingSharedDraft = null;
+let sharedDraftSave = null;
+let applyingSharedDraft = false;
 
 function reviewSelection() { return reviewWindow.getSelection(); }
 function rangeInReview(range) { return !!range && reviewRoot.contains(range.commonAncestorContainer); }
@@ -554,14 +561,17 @@ async function init() {
   setHoverSelect(true);
   const resizeObserver = new ResizeObserver(() => requestAnimationFrame(renderAnnotationInk));
   resizeObserver.observe(docEl);
+  let restoredSharedDraft = false;
   try {
     await readSession();
     if (reviewState.closed) { showDone(reviewState.history.at(-1)?.requestId); return; }
     const requestId = sessionStorage.getItem(submissionKey);
     if (requestId && reviewState.history.some((message) => message.requestId === requestId)) clearDraft();
     sessionStorage.removeItem(submissionKey);
+    await initializeSharedDraft();
+    restoredSharedDraft = true;
   } catch { /* Polling retries the connection. Browser storage is optional. */ }
-  restoreDraft();
+  if (!restoredSharedDraft) restoreDraft();
   refreshHighlights();
   updateSidebar();
   setTimeout(pollSession, 750);
@@ -1046,7 +1056,10 @@ async function renderRichHtml(htmlStr) {
   const warnings = [];
   const cssTasks = [];
   const blocked = 'script,iframe,frame,frameset,object,embed,portal,base,meta,template,canvas,audio,video,source,track';
-  parsed.querySelectorAll(blocked).forEach((node) => { warnings.push(`${node.localName} was blocked`); node.remove(); });
+  parsed.querySelectorAll(blocked).forEach((node) => {
+    if (node.localName !== 'meta') warnings.push(`${node.localName} was blocked`);
+    node.remove();
+  });
   for (const el of parsed.querySelectorAll('*')) {
     for (const attr of [...el.attributes]) {
       const name = attr.name.toLowerCase();
@@ -1141,7 +1154,7 @@ async function renderRichHtml(htmlStr) {
     clearBlockHover(); hoverBlock = element; element.classList.add('block-hover');
   });
   reviewRoot.addEventListener('mouseleave', clearHover);
-  reviewRoot.addEventListener('mouseup', () => setTimeout(() => maybeShowAddButton(true), 0));
+  reviewRoot.addEventListener('mouseup', () => settleDocumentSelection(true));
   reviewRoot.addEventListener('scroll', () => { hideAddButton(); renderAnnotationInk(); }, true);
   reviewRoot.ownerDocument.addEventListener('keydown', (event) => { if (event.key === 'Escape') { closePopover(); hideAddButton(); } });
   reviewRoot.addEventListener('mousedown', (event) => {
@@ -1321,10 +1334,19 @@ document.addEventListener('pointerdown', clearActiveAnnotation, true);
 document.addEventListener('selectionchange', () => {
   if (selectedDocumentRange()) clearActiveAnnotation();
 });
-document.addEventListener('mouseup', (e) => {
-  if (popover.contains(e.target) || addBtn.contains(e.target)) return;
-  setTimeout(() => maybeShowAddButton(docEl.contains(e.target)), 0);
+document.addEventListener('mouseup', (event) => {
+  if (popover.contains(event.target) || addBtn.contains(event.target)) return;
+  if (reviewRoot.ownerDocument !== document || !reviewRoot.contains(event.target)) return clearDocumentSelection();
+  settleDocumentSelection(docEl.contains(event.target));
 });
+
+function settleDocumentSelection(notify = false) {
+  setTimeout(() => {
+    if (!popover.hidden) return;
+    if (!selectedDocumentRange()) return clearDocumentSelection();
+    maybeShowAddButton(notify);
+  }, 0);
+}
 docWrap.addEventListener('scroll', () => {
   hideAddButton();
   renderAnnotationInk();
@@ -1567,9 +1589,7 @@ popComment.addEventListener('keydown', (e) => {
 
 function closePopover() {
   popover.hidden = true;
-  pendingRange = null;
-  pendingElement = null;
-  refreshPendingHighlight();
+  clearDocumentSelection();
 }
 
 function pendingAnnotation(comment) {
@@ -1634,17 +1654,153 @@ function currentDraft() {
   };
 }
 
+function storedDraft() {
+  try {
+    const raw = sessionStorage.getItem(draftKey);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+function storedDraftRevision() {
+  try {
+    const raw = sessionStorage.getItem(draftRevisionKey);
+    if (raw === null) return null;
+    const value = Number(raw);
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  } catch { return null; }
+}
+
+function storeLocalDraft(draft, revision = sharedDraftRevision) {
+  try {
+    if (!draft.general.trim() && draft.annotations.length === 0) sessionStorage.removeItem(draftKey);
+    else sessionStorage.setItem(draftKey, JSON.stringify(draft));
+    sessionStorage.setItem(draftRevisionKey, String(revision));
+  } catch {
+    // Browser storage is only a fallback. The local session file is primary.
+  }
+}
+
 function persistDraft() {
   const draft = currentDraft();
-  try {
-    if (!draft.general.trim() && draft.annotations.length === 0) {
-      sessionStorage.removeItem(draftKey);
-    } else {
-      sessionStorage.setItem(draftKey, JSON.stringify(draft));
+  storeLocalDraft(draft);
+  if (applyingSharedDraft || sharedDraftConflict) return;
+  sharedDraftDirty = true;
+  pendingSharedDraft = draft;
+  void flushSharedDraft();
+}
+
+function carriedDraft(local, remote) {
+  if (!reviewState?.waiting || remote.general || remote.annotations.length) return null;
+  const submitted = [...reviewState.history].reverse().find((entry) => entry.role === 'user');
+  if (!submitted || submitted.turn !== reviewState.nextTurn - 1) return null;
+  const comparable = (annotation) => {
+    const { id, unavailable, ...value } = annotation;
+    return JSON.stringify(value);
+  };
+  const submittedAnnotations = new Set((submitted.annotations || []).map(comparable));
+  return {
+    general: local.general.trim() === String(submitted.text || '').trim() ? '' : local.general,
+    annotations: local.annotations.filter((annotation) => !submittedAnnotations.has(comparable(annotation))),
+  };
+}
+
+async function flushSharedDraft() {
+  if (sharedDraftSave) return sharedDraftSave;
+  sharedDraftSave = (async () => {
+    while (pendingSharedDraft && !sharedDraftConflict && connected) {
+      const nextDraft = pendingSharedDraft;
+      pendingSharedDraft = null;
+      try {
+        const response = await fetch('/draft?t=' + token, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ revision: sharedDraftRevision, draft: nextDraft }),
+          signal: AbortSignal.timeout(10000),
+        });
+        const result = await response.json();
+        if (response.status === 409) {
+          if (!reviewState?.waiting) {
+            try { await readSession(); } catch { /* The normal retry path keeps the browser draft. */ }
+          }
+          const rebased = carriedDraft(pendingSharedDraft || currentDraft(), result.draft);
+          if (rebased) {
+            applySharedDraft(rebased, result.revision);
+            if (rebased.general || rebased.annotations.length) {
+              pendingSharedDraft = rebased;
+              sharedDraftDirty = true;
+              continue;
+            }
+            break;
+          }
+          sharedDraftConflict = true;
+          pendingSharedDraft = nextDraft;
+          reviewStatus('This draft changed in another browser. Your changes remain in this tab. Reload to use the shared draft.');
+          updateButtons();
+          break;
+        }
+        if (!response.ok) throw new Error(result.error || 'Could not save draft');
+        sharedDraftRevision = result.revision;
+        if (!pendingSharedDraft && JSON.stringify(result.draft) !== JSON.stringify(nextDraft)) {
+          applySharedDraft(result.draft, result.revision);
+        } else {
+          storeLocalDraft(currentDraft(), sharedDraftRevision);
+          sharedDraftDirty = pendingSharedDraft !== null;
+        }
+      } catch {
+        if (!pendingSharedDraft) pendingSharedDraft = nextDraft;
+        sharedDraftDirty = true;
+        reviewStatus('Could not save the draft to this machine. Your browser copy is kept.');
+        break;
+      }
     }
-  } catch {
-    // Storage is optional. The in-memory session still works if it is blocked.
+  })();
+  try { await sharedDraftSave; } finally { sharedDraftSave = null; }
+}
+
+function applySharedDraft(draft, revision) {
+  applyingSharedDraft = true;
+  clearHover();
+  clearDocumentSelection();
+  activeAnnotation = null;
+  editingAnnotation = null;
+  closePopover();
+  annotations = [];
+  generalEl.value = '';
+  restoreDraft(draft);
+  sharedDraftRevision = revision;
+  sharedDraftDirty = false;
+  storeLocalDraft(draft, revision);
+  applyingSharedDraft = false;
+  refreshHighlights();
+  updateSidebar();
+  updateButtons();
+}
+
+async function readSharedDraft() {
+  if (sharedDraftSave) await sharedDraftSave;
+  const response = await fetch('/draft?t=' + token, { signal: AbortSignal.timeout(10000) });
+  if (!response.ok) throw new Error('Draft unavailable');
+  const remote = await response.json();
+  if (remote.revision === sharedDraftRevision) return;
+  if (sharedDraftDirty || pendingSharedDraft || !popover.hidden || editingAnnotation) {
+    sharedDraftConflict = true;
+    reviewStatus('This draft changed in another browser. Your changes remain in this tab. Reload to use the shared draft.');
+    updateButtons();
+    return;
   }
+  applySharedDraft(remote.draft, remote.revision);
+}
+
+async function initializeSharedDraft() {
+  const local = storedDraft();
+  const localRevision = storedDraftRevision();
+  const response = await fetch('/draft?t=' + token, { signal: AbortSignal.timeout(10000) });
+  if (!response.ok) throw new Error('Draft unavailable');
+  const remote = await response.json();
+  sharedDraftRevision = remote.revision;
+  const localCanRecover = local && (remote.revision === 0 || localRevision === remote.revision)
+    && JSON.stringify(local) !== JSON.stringify(remote.draft);
+  applySharedDraft(localCanRecover ? local : remote.draft, remote.revision);
+  if (localCanRecover) persistDraft();
 }
 
 function storedElementContext(value) {
@@ -1808,6 +1964,7 @@ function rangeFromTextOffsets(start, end) {
 function clearDraft() {
   try {
     sessionStorage.removeItem(draftKey);
+    sessionStorage.removeItem(draftRevisionKey);
   } catch {
     // Storage is optional.
   }
@@ -1959,10 +2116,11 @@ function scrollToAnnotation(annotation) {
 }
 
 function clearDocumentSelection() {
-  reviewSelection()?.removeAllRanges();
+  if (reviewWindow !== window || document.activeElement?.localName !== 'textarea') reviewSelection()?.removeAllRanges();
   pendingRange = null;
   pendingElement = null;
   hideAddButton();
+  clearHover();
   refreshPendingHighlight();
 }
 
@@ -2184,7 +2342,7 @@ generalEl.addEventListener('input', () => {
 
 function commentingPaused() {
   return submitting || !connected || !reviewState || reviewState.waiting || reviewState.closed
-    || documentPending || renderingUpdate || reviewState.revision !== loadedRevision;
+    || documentPending || renderingUpdate || sharedDraftConflict || reviewState.revision !== loadedRevision;
 }
 
 function hideCommentingNotice() {
@@ -2194,9 +2352,11 @@ function hideCommentingNotice() {
 }
 
 function showCommentingNotice() {
-  const message = reviewState?.waiting
-    ? 'Waiting for the agent’s reply. Commenting will resume when the document is ready.'
-    : 'Commenting is paused until the document is ready.';
+  const message = sharedDraftConflict
+    ? 'This draft changed in another browser. Reload to use the shared draft.'
+    : reviewState?.waiting
+      ? 'Waiting for the agent’s reply. Commenting will resume when the document is ready.'
+      : 'Commenting is paused until the document is ready.';
   if (commentingNotice.textContent !== message) commentingNotice.textContent = message;
   commentingNotice.hidden = false;
   clearTimeout(commentingNoticeTimer);
@@ -2379,9 +2539,10 @@ async function readSession() {
   connected = true;
   documentPending = state.revision !== loadedRevision;
   renderHistory();
-  reviewStatus(state.waiting ? 'Waiting for the agent. Document commenting is paused. You can draft a message.'
-    : documentPending ? 'Updating the document. Commenting will resume when it is ready.'
-    : 'Replies appear here. You can send a message or annotate the document.');
+  reviewStatus(sharedDraftConflict ? 'This draft changed in another browser. Your changes remain in this tab. Reload to use the shared draft.'
+    : state.waiting ? 'Waiting for the agent. Document commenting is paused. You can draft a message.'
+      : documentPending ? 'Updating the document. Commenting will resume when it is ready.'
+        : 'Replies appear here. You can send a message or annotate the document.');
   updateButtons();
 }
 
@@ -2426,6 +2587,8 @@ async function pollSession() {
       reviewStatus('Replies appear here. You can send a message or annotate the document.');
       updateButtons();
     }
+    await readSharedDraft();
+    if (pendingSharedDraft && !sharedDraftConflict) void flushSharedDraft();
   } catch {
     if (sessionEnded) return;
     connected = false;
@@ -2443,6 +2606,11 @@ closeBtn.addEventListener('click', () => submit('close'));
 
 async function submit(action) {
   if (submitting || !connected || !reviewState || reviewState.waiting || documentPending) return;
+  await flushSharedDraft();
+  if (sharedDraftConflict) {
+    reviewStatus('This draft changed in another browser. Your changes remain in this tab. Reload before sending.');
+    return;
+  }
   if (!popover.hidden || editingAnnotation) {
     reviewStatus('Save or cancel your open comment before sending feedback.');
     return;
@@ -2451,6 +2619,7 @@ async function submit(action) {
     action,
     turn: reviewState.nextTurn,
     requestId: crypto.randomUUID(),
+    draftRevision: sharedDraftRevision,
     general: generalEl.value.trim(),
     annotations: annotations.map((annotation) => annotation.target === 'element'
       ? { target: 'element', context: annotation.context, comment: annotation.comment, ...(annotation.unavailable ? { unavailable: true } : {}) }
@@ -2461,15 +2630,19 @@ async function submit(action) {
   };
   submitting = true;
   updateButtons();
-  persistDraft();
+  storeLocalDraft(currentDraft());
   try { sessionStorage.setItem(submissionKey, payload.requestId); } catch { /* Storage is optional. */ }
   try {
     const res = await fetch('/submit?t=' + token, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
       signal: AbortSignal.timeout(10000),
     });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    finishSubmission(payload);
+    const result = await res.json();
+    if (!res.ok) {
+      if (res.status === 409 && /another browser/i.test(result.error || '')) sharedDraftConflict = true;
+      throw new Error(result.error || 'HTTP ' + res.status);
+    }
+    finishSubmission(payload, result.draftRevision);
   } catch (err) {
     // A response can be lost after the server accepted the message. Reconcile
     // its ID before enabling another submission or clearing the saved draft.
@@ -2483,7 +2656,11 @@ async function submit(action) {
   }
 }
 
-function finishSubmission(payload) {
+function finishSubmission(payload, savedDraftRevision) {
+  if (Number.isSafeInteger(savedDraftRevision)) sharedDraftRevision = savedDraftRevision;
+  sharedDraftDirty = false;
+  sharedDraftConflict = false;
+  pendingSharedDraft = null;
   clearReference();
   clearDraft();
   try { sessionStorage.removeItem(submissionKey); } catch { /* Storage is optional. */ }

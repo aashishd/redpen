@@ -56,7 +56,12 @@ for (const format of ['html', 'md', 'txt']) {
           const state = await api('/session');
           if (state.waiting) await api('/reply', { turn: state.nextTurn - 1, message: 'Test cleanup.' });
           if (state.closed) await api('/confirm-close', { requestId: state.history.at(-1)?.requestId });
-          else await api('/submit', { action: 'close', general: '', annotations: [] });
+          else {
+            const savedDraft = await api('/draft');
+            const requestId = 'comment-lock-test-cleanup';
+            await api('/submit', { action: 'close', requestId, draftRevision: savedDraft.revision, general: '', annotations: [] });
+            await api('/confirm-close', { requestId });
+          }
         }
       } finally { await stopChild(initial, exited); }
     });
@@ -160,7 +165,9 @@ for (const format of ['html', 'md', 'txt']) {
       await click('#list .edit');
       await value('document.querySelector(".edit-area").value="Unsaved draft edit"');
     } else await value('popComment.value="Unsaved draft edit"');
-    await api('/submit', { action: 'revise', general: 'Another client requested feedback.', annotations: [] });
+    const otherClientDraft = await api('/draft');
+    await api('/submit', { action: 'revise', draftRevision: otherClientDraft.revision,
+      general: 'Another client requested feedback.', annotations: [] });
     await until(() => value('reviewState.waiting'), 'another client submission');
     assert.deepEqual(await value('[popover.hidden, editingAnnotation === null, annotations.length, annotations[0].comment, document.querySelector("#list .edit").disabled]'), [true, true, 1, 'Unsaved draft edit', true]);
     writeFileSync(file, content(format, 2));

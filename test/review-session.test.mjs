@@ -34,7 +34,11 @@ async function start(t, options = []) {
         if (state.closed) await post('/confirm-close', { requestId: state.history.at(-1)?.requestId });
         else {
           if (state.waiting) await post('/reply', { turn: state.nextTurn - 1, message: 'Test cleanup.' });
-          await post('/submit', { action: 'close', general: '', annotations: [] });
+          const savedDraft = await (await fetch(new URL('/draft' + base.search, base))).json();
+          const requestId = 'review-session-test-cleanup';
+          const close = await post('/submit', { action: 'close', requestId, draftRevision: savedDraft.revision,
+            general: '', annotations: [] });
+          if (close.ok) await post('/confirm-close', { requestId });
         }
       } catch { /* A successfully closed session is already gone. */ }
     }
@@ -133,11 +137,11 @@ test('session endpoints reject unsafe requests and failed document updates prese
   assert.equal((await post('/reply', { turn: 1, message: 'Answer' })).status, 200);
 });
 
-test('stopping the initial command also stops its unsubmitted session', { timeout: 15000 }, async (t) => {
+test('stopping the initial command leaves its unsubmitted session available', { timeout: 15000 }, async (t) => {
   const { initial, snapshot } = await start(t);
   initial.child.kill('SIGTERM');
-  await initial.exited;
-  await until(async () => { try { await snapshot(); return false; } catch { return true; } });
+  assert.equal((await initial.exited).code, 143);
+  assert.deepEqual(await snapshot(), { revision: 0, closed: false, waiting: false, nextTurn: 1, history: [] });
 });
 
 test('accepted feedback is recoverable when the first command dies before receiving it', { timeout: 15000 }, async (t) => {

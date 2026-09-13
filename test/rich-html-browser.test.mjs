@@ -33,7 +33,32 @@ async function startServer(temp, name, text) {
   child.stdout.on('data', (chunk) => { stdout += chunk; });
   const exited = new Promise((resolveExit) => child.once('close', resolveExit));
   const base = await new Promise((resolveBase, reject) => { const timer = setTimeout(() => reject(new Error('RedPen did not start')), 10000); child.stderr.on('data', (chunk) => { stderr += chunk; const match = stderr.match(/http:\/\/127\.0\.0\.1:\d+\/\?t=[a-f0-9]+/); if (match) { clearTimeout(timer); resolveBase(match[0]); } }); child.once('exit', (code) => reject(new Error(`RedPen exited ${code}`))); });
-  return { base, output: () => stdout, exited, stop: () => stopChild(child, exited) };
+  return { base, output: () => stdout, exited, async stop() {
+    const url = new URL(base);
+    const requestId = 'rich-test-' + url.searchParams.get('t');
+    const post = (path, body) => fetch(new URL(path + url.search, url), {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      signal: AbortSignal.timeout(1000),
+    });
+    try {
+      const response = await fetch(new URL('/session' + url.search, url), { signal: AbortSignal.timeout(1000) });
+      const state = await response.json();
+      if (state.closed) await post('/confirm-close', { requestId: state.history.at(-1)?.requestId });
+      else {
+        if (state.waiting) await post('/reply', { turn: state.nextTurn - 1, message: 'Test cleanup.' });
+        const draftResponse = await fetch(new URL('/draft' + url.search, url), { signal: AbortSignal.timeout(1000) });
+        const savedDraft = await draftResponse.json();
+        if ((await post('/submit', { action: 'close', requestId, draftRevision: savedDraft.revision,
+          general: '', annotations: [] })).ok) await post('/confirm-close', { requestId });
+      }
+      for (let attempt = 0; attempt < 50; attempt++) {
+        try { await fetch(new URL('/session' + url.search, url), { signal: AbortSignal.timeout(100) }); }
+        catch { break; }
+        await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+      }
+    } catch { /* A completed path may already have stopped its worker. */ }
+    await stopChild(child, exited);
+  } };
 }
 
 // This is intentionally an end-to-end CDP test. It uses no DOM dump and skips only

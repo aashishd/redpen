@@ -89,7 +89,10 @@ test('review chat keeps immutable history, safe references, and pending drafts i
         if (state.closed) await post('/confirm-close', { requestId: state.history.at(-1)?.requestId });
         else {
           if (state.waiting) await post('/reply', { turn: state.nextTurn - 1, message: 'Test cleanup.' });
-          await post('/submit', { action: 'close', general: '', annotations: [] });
+          const savedDraft = await (await fetch(new URL('/draft' + base.search, base))).json();
+          const requestId = 'review-chat-test-cleanup';
+          if ((await post('/submit', { action: 'close', requestId, draftRevision: savedDraft.revision,
+            general: '', annotations: [] })).ok) await post('/confirm-close', { requestId });
         }
       } catch { /* Closed sessions need no cleanup. */ }
       initial.child.kill(); await initial.exited;

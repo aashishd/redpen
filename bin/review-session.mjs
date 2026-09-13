@@ -41,7 +41,14 @@ export function startReview(script, args) {
     });
   });
   for (const signal of ['SIGINT', 'SIGTERM']) {
-    process.on(signal, () => { child.kill(signal); process.exit(signal === 'SIGINT' ? 130 : 143); });
+    process.on(signal, () => {
+      // The browser session owns durable state. A foreground tool timeout must
+      // not stop it or discard comments that have not been submitted yet.
+      child.stderr.destroy();
+      if (child.connected) child.disconnect();
+      child.unref();
+      process.exit(signal === 'SIGINT' ? 130 : 143);
+    });
   }
 }
 
@@ -95,61 +102,142 @@ export async function sessionCommand(command, args) {
   }
 }
 
-export function createReviewSession({ formatReport, reloadDocument, onFeedback }) {
+export function createReviewSession({ formatReport, reloadDocument, onFeedback,
+  initialState = null, persistState = () => {}, clearState = () => {} }) {
   let link;
   let revision = 0;
   let pending = null;
   let closed = false;
   let closeTimer;
-  const turns = [];
+  let turns = [];
+  let draft = { general: '', annotations: [] };
+  let draftRevision = 0;
   const waiters = new Set();
   const json = (res, status, body) => {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
     res.end(JSON.stringify(body));
   };
+  const validAnnotation = (annotation, requireId = false) => annotation && typeof annotation.comment === 'string'
+    && (!requireId || (Number.isSafeInteger(annotation.id) && annotation.id > 0))
+    && (annotation.target === 'element' ? annotation.context && typeof annotation.context === 'object' : typeof annotation.quote === 'string');
+  const validFeedback = (body) => body && ['revise', 'close'].includes(body.action) && typeof body.general === 'string'
+    && Array.isArray(body.annotations) && body.annotations.length <= 1000
+    && body.annotations.every((annotation) => validAnnotation(annotation))
+    && (body.requestId === undefined || (typeof body.requestId === 'string' && /^[a-zA-Z0-9-]{1,80}$/.test(body.requestId)))
+    && (body.action !== 'close' || body.requestId !== undefined);
+  const validDraft = (value) => value && typeof value.general === 'string' && Array.isArray(value.annotations)
+    && value.annotations.length <= 1000 && value.annotations.every((annotation) => validAnnotation(annotation, true));
+  const copy = (value) => JSON.parse(JSON.stringify(value));
+
+  if (initialState !== null) {
+    if (!initialState || !Number.isSafeInteger(initialState.revision) || initialState.revision < 0
+      || !Number.isSafeInteger(initialState.draftRevision) || initialState.draftRevision < 0
+      || !validDraft(initialState.draft) || !Array.isArray(initialState.turns)) {
+      throw new Error('saved session data is invalid');
+    }
+    const restored = initialState.turns.map((stored, index) => {
+      if (!stored || stored.id !== index + 1 || !validFeedback(stored.feedback)
+        || (stored.reply !== null && (typeof stored.reply !== 'string' || !stored.reply.trim() || stored.reply.length > MAX_REPLY_CHARS))) {
+        throw new Error('saved session data is invalid');
+      }
+      return { id: stored.id, feedback: copy(stored.feedback), requestId: stored.feedback.requestId,
+        fingerprint: JSON.stringify(stored.feedback), reply: stored.reply };
+    });
+    const closeTurns = restored.filter((turn) => turn.feedback.action === 'close');
+    if (closeTurns.length > 1 || (closeTurns.length === 1
+      && (closeTurns[0] !== restored.at(-1) || closeTurns[0].reply !== null))) throw new Error('saved session data is invalid');
+    const openTurns = restored.filter((turn) => turn.feedback.action === 'revise' && turn.reply === null);
+    closed = closeTurns.length === 1;
+    if (openTurns.length > 1 || (openTurns.length === 1 && (openTurns[0] !== restored.at(-1) || closed))) {
+      throw new Error('saved session data is invalid');
+    }
+    revision = initialState.revision;
+    turns = restored;
+    pending = openTurns[0] || null;
+    draft = copy(initialState.draft);
+    draftRevision = initialState.draftRevision;
+  }
+
   const snapshot = () => ({ revision, closed, waiting: pending !== null, nextTurn: turns.length + 1,
     history: turns.flatMap((turn) => [
       { role: 'user', turn: turn.id, requestId: turn.requestId, text: turn.feedback.general, annotations: turn.feedback.annotations },
       ...(turn.reply === null ? [] : [{ role: 'agent', turn: turn.id, text: turn.reply }]),
     ]),
   });
+  const draftSnapshot = () => ({ revision: draftRevision, draft: copy(draft) });
+  const savedState = () => ({ revision, draftRevision, draft: copy(draft),
+    turns: turns.map((turn) => ({ id: turn.id, feedback: copy(turn.feedback), reply: turn.reply })) });
+  const save = () => persistState(savedState());
+  const reportFor = (turn) => formatReport(turn.feedback).replace(/\n\n/, `\nSESSION: ${link}\nTURN: ${turn.id}\n\n`);
+
   function deliverWaiters() {
     for (const waiter of waiters) {
       const turn = turns.find((item) => item.id > waiter.after);
-      if (turn) { clearTimeout(waiter.timer); waiters.delete(waiter); json(waiter.res, 200, { report: turn.report }); }
+      if (turn) { clearTimeout(waiter.timer); waiters.delete(waiter); json(waiter.res, 200, { report: reportFor(turn) }); }
     }
   }
-  function submit(body, res) {
-    if (!body || !['revise', 'close'].includes(body.action) || typeof body.general !== 'string'
-      || !Array.isArray(body.annotations) || body.annotations.length > 1000
-      || body.annotations.some((a) => !a || typeof a.comment !== 'string'
-        || (a.target === 'element' ? !a.context || typeof a.context !== 'object' : typeof a.quote !== 'string'))
-      || (body.requestId !== undefined && (typeof body.requestId !== 'string' || !/^[a-zA-Z0-9-]{1,80}$/.test(body.requestId)))) {
-      return json(res, 400, { error: 'Invalid feedback.' });
+  function updateDraft(body, res) {
+    if (!body || !Number.isSafeInteger(body.revision) || body.revision < 0 || !validDraft(body.draft)) {
+      return json(res, 400, { error: 'Invalid draft.' });
     }
+    if (body.revision !== draftRevision) {
+      return json(res, 409, { error: 'The draft changed in another browser.', ...draftSnapshot() });
+    }
+    const nextDraft = copy(body.draft);
+    if (JSON.stringify(nextDraft) === JSON.stringify(draft)) return json(res, 200, draftSnapshot());
+    const previousDraft = draft;
+    const previousRevision = draftRevision;
+    draft = nextDraft;
+    draftRevision++;
+    try { save(); } catch (error) {
+      draft = previousDraft;
+      draftRevision = previousRevision;
+      throw error;
+    }
+    json(res, 200, draftSnapshot());
+  }
+  function submit(body, res) {
+    if (!validFeedback(body)) return json(res, 400, { error: 'Invalid feedback.' });
     const fingerprint = JSON.stringify(body);
     const previous = body.requestId && turns.find((turn) => turn.requestId === body.requestId);
     if (previous) return json(res, previous.fingerprint === fingerprint ? 200 : 409,
-      previous.fingerprint === fingerprint ? { ok: true } : { error: 'Submission ID already used.' });
+      previous.fingerprint === fingerprint ? { ok: true, draftRevision } : { error: 'Submission ID already used.' });
     if (closed || pending || (body.turn !== undefined && body.turn !== turns.length + 1)) {
       return json(res, 409, { error: 'Wait for the current reply before sending more feedback.' });
     }
+    const savedDraftExists = Boolean(draft.general || draft.annotations.length);
+    if ((body.draftRevision === undefined && savedDraftExists)
+      || (body.draftRevision !== undefined && body.draftRevision !== draftRevision)) {
+      return json(res, 409, { error: 'The draft changed in another browser.', ...draftSnapshot() });
+    }
     const id = turns.length + 1;
-    const report = formatReport(body).replace(/\n\n/, `\nSESSION: ${link}\nTURN: ${id}\n\n`);
-    const turn = { id, feedback: body, requestId: body.requestId, fingerprint, report, reply: null };
-    // Persist output before accepting the submission, so a failed --out write
-    // leaves the browser draft editable and does not partially submit feedback.
-    onFeedback(report, body.action);
+    const turn = { id, feedback: copy(body), requestId: body.requestId, fingerprint, reply: null };
+    const previousDraft = draft;
+    const previousDraftRevision = draftRevision;
     turns.push(turn);
     pending = body.action === 'revise' ? turn : null;
     closed = body.action === 'close';
+    draft = { general: '', annotations: [] };
+    draftRevision++;
+    try {
+      save();
+      onFeedback(reportFor(turn), body.action);
+    } catch (error) {
+      turns.pop();
+      pending = null;
+      closed = false;
+      draft = previousDraft;
+      draftRevision = previousDraftRevision;
+      try { save(); } catch { /* Preserve the original failure. */ }
+      throw error;
+    }
     deliverWaiters();
     if (closed) {
-      // A short receipt window lets the browser reconcile a lost response.
-      // Legacy submissions without request IDs retain one-shot shutdown.
-      closeTimer = setTimeout(() => process.exit(0), body.requestId ? 30000 : 100);
+      // A receipt window lets the browser reconcile a lost response and confirm
+      // that the durable close record can be removed.
+      closeTimer = setTimeout(() => process.exit(0), 30000);
     }
-    json(res, 200, { ok: true });
+    json(res, 200, { ok: true, draftRevision });
   }
   function reply(body, res) {
     if (!body || !Number.isSafeInteger(body.turn) || typeof body.message !== 'string'
@@ -164,12 +252,19 @@ export function createReviewSession({ formatReport, reloadDocument, onFeedback }
     turn.reply = body.message;
     revision++;
     pending = null;
+    try { save(); } catch (error) {
+      turn.reply = null;
+      revision--;
+      pending = turn;
+      throw error;
+    }
     json(res, 200, { ok: true });
   }
   function confirmClose(body, res) {
     if (!closed || !body?.requestId || body.requestId !== turns.at(-1)?.requestId) {
       return json(res, 409, { error: 'No matching closed submission.' });
     }
+    clearState();
     clearTimeout(closeTimer);
     closeTimer = setTimeout(() => process.exit(0), 100);
     json(res, 200, { ok: true });
@@ -179,7 +274,7 @@ export function createReviewSession({ formatReport, reloadDocument, onFeedback }
       return json(res, 400, { error: 'Invalid previous turn.' });
     }
     const turn = turns.find((item) => item.id > body.after);
-    if (turn) return json(res, 200, { report: turn.report });
+    if (turn) return json(res, 200, { report: reportFor(turn) });
     if (waiters.size >= 16) return json(res, 429, { error: 'Too many waiting commands.' });
     const waiter = { res, after: body.after };
     waiter.timer = setTimeout(() => { waiters.delete(waiter); json(res, 200, { report: null }); }, 25000);
@@ -187,12 +282,14 @@ export function createReviewSession({ formatReport, reloadDocument, onFeedback }
     waiters.add(waiter);
   }
   return {
-    setLink(value) { link = value; },
+    setLink(value) { link = value; save(); },
     get revision() { return revision; },
     get submitted() { return turns.length > 0; },
+    get pendingReport() { return pending || closed ? reportFor(pending || turns.at(-1)) : null; },
     handle(req, res, pathname) {
       if (req.method === 'GET' && pathname === '/session') { json(res, 200, snapshot()); return true; }
-      const handlers = { '/submit': submit, '/reply': reply, '/wait': wait, '/confirm-close': confirmClose };
+      if (req.method === 'GET' && pathname === '/draft') { json(res, 200, draftSnapshot()); return true; }
+      const handlers = { '/draft': updateDraft, '/submit': submit, '/reply': reply, '/wait': wait, '/confirm-close': confirmClose };
       if (req.method !== 'POST' || !Object.hasOwn(handlers, pathname)) return false;
       let body = '';
       let size = 0;
@@ -205,8 +302,11 @@ export function createReviewSession({ formatReport, reloadDocument, onFeedback }
       });
       req.on('end', () => {
         if (res.writableEnded) return;
-        try { handlers[pathname](JSON.parse(body), res); }
-        catch { if (!res.writableEnded) json(res, 400, { error: 'Could not read the message or updated document.' }); }
+        let parsed;
+        try { parsed = JSON.parse(body); }
+        catch { return json(res, 400, { error: 'Could not read the message.' }); }
+        try { handlers[pathname](parsed, res); }
+        catch { if (!res.writableEnded) json(res, 400, { error: 'Could not read the message or save the review session.' }); }
       });
       return true;
     },
