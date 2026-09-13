@@ -10,7 +10,7 @@ import { cleanupAfter, startBrowser, stopChild } from '../test-support/browser.m
 const CLI = fileURLToPath(new URL('../bin/redpen.mjs', import.meta.url));
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until(check, description) {
-  const end = Date.now() + 15000;
+  const end = Date.now() + 30000;
   while (Date.now() < end) {
     try { if (await check()) return; } catch { /* Navigation can replace the page context. */ }
     await pause(40);

@@ -2,6 +2,15 @@
 
 Changes in each RedPen release.
 
+## 0.6.1
+
+- Keep unfinished sessions, review history, comments, and messages across command timeouts and worker restarts.
+- Resume one active review per canonical document with a fresh local URL after a crash.
+- Synchronize saved drafts across browsers and reject stale writes before they can replace newer feedback.
+- Preserve submitted close feedback until the browser confirms delivery.
+- Clear cancelled or stale document selections without blocking message input.
+- Remove normal HTML metadata silently while retaining sandbox protections.
+
 ## 0.6.0
 
 - Keep review history and replies in one browser page across review rounds.
