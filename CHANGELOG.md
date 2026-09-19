@@ -2,6 +2,17 @@
 
 Changes in each RedPen release.
 
+## 0.7.0
+
+- Add keyboard shortcuts and list them in the header. `C` comments on the
+  hover-marked line or element. `⌘ + ↵` (`⌃ + ↵` elsewhere) saves a new or
+  edited comment, and sends for review from the message box. `⌃ + H` turns
+  **Hover select** on or off.
+- Add a **JavaScript** switch for HTML reviews. The page's scripts run in a
+  separate sandboxed frame, and commenting pauses. Turn it off to comment on
+  the page as the scripts left it.
+- Show small `data:` images in HTML reviews.
+
 ## 0.6.1
 
 - Keep unfinished sessions, review history, comments, and messages across command timeouts and worker restarts.
