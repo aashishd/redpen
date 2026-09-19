@@ -91,11 +91,15 @@
   .brand-icon img { display: block; width: 22px; height: 22px; }
   header #filename { min-width: 0; overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
   header .hint { flex: 1 1 160px; margin-left: auto; color: var(--muted); font-size: 13px; }
+  .shortcuts { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; padding: 0; list-style: none; color: var(--muted); font-size: 12px; }
+  .shortcuts li { white-space: nowrap; }
+  .shortcuts kbd { padding: 1px 5px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-soft); color: var(--text); font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
   main { display: flex; flex: 1; min-height: 0; }
   #docwrap { position: relative; flex: 1; min-width: 0; overflow-y: auto; }
   #doc { position: relative; z-index: 1; max-width: 780px; margin: 0 auto; padding: 32px 48px 120px; }
   #doc.rich { width: 100%; max-width: none; margin: 0; padding: 0; }
   #doc.rich iframe { display: block; width: 100%; min-height: 100%; border: 0; background: white; }
+  #doc.rich iframe[hidden] { display: none; }
   #doc h1 { font-size: 1.7em; border-bottom: 1px solid var(--border); padding-bottom: .3em; }
   #doc h2 { font-size: 1.35em; margin-top: 1.6em; }
   #doc h3 { font-size: 1.1em; margin-top: 1.4em; }
@@ -157,6 +161,8 @@
     font-size: 13px;
     color: var(--muted);
   }
+  .switch[hidden] { display: none; }
+  .switch:has(input:disabled) { cursor: default; opacity: .55; }
   .switch input { position: absolute; opacity: 0; }
   .switch .slider {
     width: 34px;
@@ -392,6 +398,7 @@
   @media (max-width: 600px) {
     header { gap: 6px 8px; padding: 8px 12px; }
     header .hint { flex-basis: 100%; margin-left: 0; order: 2; }
+    .shortcuts { order: 2; }
     .theme-control { order: 3; }
     .switch { margin-left: 0; order: 4; }
     aside { width: min(380px, calc(100vw - 52px)); }
@@ -404,6 +411,12 @@
   <span class="brand"><span class="brand-icon" aria-hidden="true"><img src="/pen.svg?t=__REDPEN_TOKEN__" alt="" width="22" height="22"></span>redpen</span>
   <span id="filename"></span>
   <span class="hint" id="hint" title="Select text, or Shift-click after selecting a word to extend it">Hover and click to comment</span>
+  <ul class="shortcuts" aria-label="Keyboard shortcuts">
+    <li><kbd>C</kbd> Comment on hover</li>
+    <li><kbd id="save-shortcut"></kbd> Save comment</li>
+    <li title="Works while you type in the Message box"><kbd id="send-shortcut"></kbd> Send for review</li>
+    <li><kbd>⌃ + H</kbd> Hover select on/off</li>
+  </ul>
   <div class="theme-control" role="group" aria-label="Theme">
     <span class="sr-only">Theme</span>
     <button id="theme-auto" type="button" aria-pressed="true">Auto</button>
@@ -415,6 +428,11 @@
     <input type="checkbox" id="block-toggle">
     <span class="slider"></span>
     Hover select
+  </label>
+  <label class="switch" id="script-switch" title="Run the page's JavaScript. Commenting pauses until you turn it off." hidden>
+    <input type="checkbox" id="script-toggle">
+    <span class="slider"></span>
+    JavaScript
   </label>
 </header>
 <main>
@@ -492,6 +510,8 @@ const themeAutoBtn = document.getElementById('theme-auto');
 const themeLightBtn = document.getElementById('theme-light');
 const themeDarkBtn = document.getElementById('theme-dark');
 const themeError = document.getElementById('theme-error');
+const scriptSwitch = document.getElementById('script-switch');
+const scriptToggle = document.getElementById('script-toggle');
 
 let annotations = [];
 let nextId = 1;
@@ -526,6 +546,10 @@ let sharedDraftConflict = false;
 let pendingSharedDraft = null;
 let sharedDraftSave = null;
 let applyingSharedDraft = false;
+let documentMeta = null;
+let liveFrame = null;      // the HTML page with its JavaScript running
+let liveMode = false;
+let liveSwitching = false;
 
 function reviewSelection() { return reviewWindow.getSelection(); }
 function rangeInReview(range) { return !!range && reviewRoot.contains(range.commonAncestorContainer); }
@@ -547,6 +571,7 @@ function reviewCaretFromPoint(x, y) {
 
 const themeReady = setupTheme();
 modifierHint.textContent = (navigator.platform || '').toLowerCase().includes('mac') ? '(⌘ + ↵)' : '(⌃ + ↵)';
+for (const id of ['save-shortcut', 'send-shortcut']) document.getElementById(id).textContent = modifierHint.textContent.slice(1, -1);
 init();
 
 async function init() {
@@ -605,6 +630,8 @@ async function renderDocument(meta) {
   whole.selectNodeContents(reviewRoot);
   docText = whole.toString();
   loadedRevision = meta.revision;
+  documentMeta = meta;
+  scriptSwitch.hidden = !meta.live;
   document.getElementById('filename').textContent = meta.name;
   document.title = meta.name + ' · redpen';
 }
@@ -1145,6 +1172,7 @@ async function renderRichHtml(htmlStr) {
   reviewRoot.addEventListener('pointerdown', clearReference, true);
   installCommentingGate(reviewRoot);
   reviewRoot.addEventListener('mousemove', (event) => {
+    hoverPoint = framePoint(event);
     if (commentingPaused()) return clearHover();
     if (!blockMode || !popover.hidden) return;
     const element = pickReviewElement(event.target);
@@ -1157,6 +1185,7 @@ async function renderRichHtml(htmlStr) {
   reviewRoot.addEventListener('mouseup', () => settleDocumentSelection(true));
   reviewRoot.addEventListener('scroll', () => { hideAddButton(); renderAnnotationInk(); }, true);
   reviewRoot.ownerDocument.addEventListener('keydown', (event) => { if (event.key === 'Escape') { closePopover(); hideAddButton(); } });
+  reviewRoot.ownerDocument.addEventListener('keydown', handleShortcut);
   reviewRoot.addEventListener('mousedown', (event) => {
     if (blockMode || !popover.hidden || event.button !== 0 || !event.shiftKey) return;
     if (blockCommenting()) return;
@@ -1358,6 +1387,7 @@ commentsPane.addEventListener('scroll', () => {
 }, true);
 window.addEventListener('resize', () => {
   commentRailPositionsDirty = true;
+  if (liveFrame) liveFrame.style.height = docWrap.clientHeight + 'px';
   renderAnnotationInk();
 });
 document.addEventListener('keydown', (e) => {
@@ -1425,6 +1455,7 @@ const BLOCK_SELECTOR = 'p, h1, h2, h3, h4, h5, h6, li, pre, blockquote, tr';
 let blockMode = false;
 let hoverBlock = null; // highlighted markdown block element
 let hoverLine = null;  // { node, start, range } for a plain-text line
+let hoverPoint = null; // last pointer position over the document, in page coordinates
 
 blockToggle.addEventListener('change', () => setHoverSelect(blockToggle.checked));
 
@@ -1437,6 +1468,7 @@ function setHoverSelect(enabled) {
 }
 
 docWrap.addEventListener('mousemove', (e) => {
+  hoverPoint = { x: e.clientX, y: e.clientY };
   if (commentingPaused()) return clearHover();
   if (richMode || !blockMode || !popover.hidden) return;
   const block = e.target.closest ? e.target.closest(BLOCK_SELECTOR) : null;
@@ -1578,6 +1610,166 @@ docEl.addEventListener('click', (e) => {
   hideAddButton();
   openPopoverAt(e.clientX, e.clientY + 8, range.toString());
 });
+
+// ---- keyboard shortcuts: C comments on the hover target, Ctrl+H toggles hover select ----
+
+function typingTarget(target) {
+  if (target?.isContentEditable) return true;
+  const name = target?.localName;
+  return name === 'textarea' || name === 'select'
+    || (name === 'input' && !/^(?:checkbox|radio|button|submit|reset|range|color|file|image)$/.test(target.type));
+}
+
+function handleShortcut(event) {
+  if (liveMode || liveSwitching || event.defaultPrevented || event.repeat || event.altKey || event.metaKey || typingTarget(event.target)) return;
+  const key = (event.key || '').toLowerCase();
+  if (event.ctrlKey && !event.shiftKey && key === 'h') {
+    event.preventDefault();
+    setHoverSelect(!blockMode);
+  } else if (!event.ctrlKey && key === 'c' && commentOnHoverTarget()) {
+    // Stop the typed letter from reaching the comment box that just opened.
+    event.preventDefault();
+  }
+}
+document.addEventListener('keydown', handleShortcut);
+
+function commentOnHoverTarget() {
+  if (!blockMode || !popover.hidden) return false;
+  const selection = reviewSelection();
+  if (selection && !selection.isCollapsed && selection.toString().trim()) return false; // manual selection wins
+  if (richMode) {
+    if (!hoverBlock) return false;
+    pendingRange = null;
+    pendingElement = { element: hoverBlock, context: describeElement(hoverBlock) };
+    hideAddButton();
+    openPopoverAt(hoverPoint.x, hoverPoint.y + 8, '', pendingElement.context);
+    return true;
+  }
+  let range = null;
+  if (hoverLine) {
+    range = hoverLine.range.cloneRange();
+  } else if (hoverBlock) {
+    range = reviewRoot.ownerDocument.createRange();
+    range.selectNodeContents(hoverBlock);
+  }
+  if (!range || !range.toString().trim()) return false;
+  pendingRange = range;
+  pendingElement = null;
+  hideAddButton();
+  openPopoverAt(hoverPoint.x, hoverPoint.y + 8, range.toString());
+  return true;
+}
+
+// ---- JavaScript switch: run an HTML page, then comment on the state it reached ----
+
+const MAX_LIVE_SNAPSHOT = 8 * 1024 * 1024;
+let liveScroll = 0;
+
+scriptToggle.addEventListener('change', () => {
+  if (scriptToggle.checked) openLivePage();
+  else void keepLivePage();
+});
+
+function openLivePage() {
+  if (liveMode || liveSwitching || !documentMeta?.live || !richFrame || blockCommenting()) {
+    scriptToggle.checked = liveMode;
+    return;
+  }
+  liveMode = true;
+  clearReference();
+  clearDocumentSelection();
+  updateButtons(); // Pauses commenting and keeps any open comment as a draft.
+  blockToggle.disabled = true;
+  liveScroll = docWrap.scrollTop;
+  liveFrame = document.createElement('iframe');
+  // No allow-same-origin: the page gets an opaque origin and cannot reach RedPen.
+  liveFrame.setAttribute('sandbox', 'allow-scripts allow-forms');
+  liveFrame.title = 'Reviewed HTML document with JavaScript on';
+  liveFrame.referrerPolicy = 'no-referrer';
+  liveFrame.style.height = docWrap.clientHeight + 'px';
+  liveFrame.src = documentMeta.live;
+  richFrame.hidden = true;
+  docEl.append(liveFrame);
+  renderAnnotationInk();
+}
+
+async function keepLivePage() {
+  if (!liveMode || liveSwitching) return;
+  liveSwitching = true;
+  scriptToggle.disabled = true;
+  const frame = liveFrame;
+  const snapshot = await requestLiveSnapshot(frame);
+  if (liveFrame !== frame) return; // A document update already closed the page.
+  closeLivePage();
+  if (!snapshot) {
+    restoreDraft(currentDraft());
+    refreshHighlights();
+    updateSidebar();
+    showNotice('Could not keep the JavaScript page state. The page shows its earlier state.');
+    return;
+  }
+  const draft = currentDraft();
+  renderingUpdate = true;
+  updateButtons();
+  annotations = [];
+  activeAnnotation = null;
+  try {
+    await renderDocument({ ...documentMeta, text: snapshot.html });
+    restoreLiveScroll(snapshot.scrollY);
+  } finally {
+    draft.general = generalEl.value;
+    restoreDraft(draft);
+    renderingUpdate = false;
+    refreshHighlights();
+    updateSidebar();
+  }
+}
+
+function closeLivePage() {
+  liveFrame?.remove();
+  liveFrame = null;
+  liveMode = false;
+  liveSwitching = false;
+  scriptToggle.checked = false;
+  scriptToggle.disabled = false;
+  blockToggle.disabled = false;
+  if (richFrame) richFrame.hidden = false;
+  docWrap.scrollTop = liveScroll;
+  updateButtons();
+}
+
+function requestLiveSnapshot(frame) {
+  return new Promise((resolve) => {
+    const target = frame?.contentWindow;
+    if (!target) return resolve(null);
+    const id = crypto.randomUUID();
+    const finish = (snapshot) => {
+      clearTimeout(timer);
+      window.removeEventListener('message', receive);
+      resolve(snapshot);
+    };
+    // The reply is page content. renderRichHtml sanitizes it like the original file.
+    const receive = (event) => {
+      const data = event.data;
+      if (event.source !== target || data?.type !== 'redpen-live-snapshot' || data.id !== id) return;
+      const valid = typeof data.html === 'string' && data.html && data.html.length <= MAX_LIVE_SNAPSHOT;
+      finish(valid ? { html: data.html, scrollY: Math.max(0, Number(data.scrollY) || 0) } : null);
+    };
+    const timer = setTimeout(() => finish(null), 6000);
+    window.addEventListener('message', receive);
+    target.postMessage({ type: 'redpen-live-snapshot', id }, '*');
+  });
+}
+
+function restoreLiveScroll(scrollY) {
+  for (const element of reviewRoot.querySelectorAll('[data-redpen-scroll]')) {
+    const [left, top] = element.getAttribute('data-redpen-scroll').split(',').map(Number);
+    element.removeAttribute('data-redpen-scroll');
+    element.scrollLeft = left || 0;
+    element.scrollTop = top || 0;
+  }
+  docWrap.scrollTop = scrollY;
+}
 
 // ---- popover ----
 
@@ -2070,6 +2262,9 @@ function updateSidebar() {
         updateSidebar();
         persistDraft();
       });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) save.click();
+      });
       const cancel = document.createElement('button');
       cancel.textContent = 'Cancel';
       cancel.addEventListener('click', (e) => {
@@ -2101,6 +2296,7 @@ function updateSidebar() {
 }
 
 function openAnnotation(annotation) {
+  if (liveMode || liveSwitching) return;
   clearDocumentSelection();
   if (activeAnnotation !== annotation) {
     activeAnnotation = annotation;
@@ -2147,6 +2343,8 @@ function renderAnnotationInk() {
   annotationBands.replaceChildren();
   commentRailBands.replaceChildren();
   inkLayer.replaceChildren();
+  // The running page moves freely, so comment marks would point at old positions.
+  if (liveMode || liveSwitching) return;
   renderCommentRailBands();
   if (!annotations.length && !hoverLine && !pendingRange && !pendingElement) return;
 
@@ -2339,9 +2537,16 @@ generalEl.addEventListener('input', () => {
   updateButtons();
   persistDraft();
 });
+// The save shortcut also sends, but only from the message box.
+generalEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.repeat) {
+    e.preventDefault();
+    reviseBtn.click();
+  }
+});
 
 function commentingPaused() {
-  return submitting || !connected || !reviewState || reviewState.waiting || reviewState.closed
+  return liveMode || liveSwitching || submitting || !connected || !reviewState || reviewState.waiting || reviewState.closed
     || documentPending || renderingUpdate || sharedDraftConflict || reviewState.revision !== loadedRevision;
 }
 
@@ -2352,11 +2557,16 @@ function hideCommentingNotice() {
 }
 
 function showCommentingNotice() {
-  const message = sharedDraftConflict
-    ? 'This draft changed in another browser. Reload to use the shared draft.'
-    : reviewState?.waiting
-      ? 'Waiting for the agent’s reply. Commenting will resume when the document is ready.'
-      : 'Commenting is paused until the document is ready.';
+  showNotice(liveMode || liveSwitching
+    ? 'JavaScript is on. Turn it off to comment.'
+    : sharedDraftConflict
+      ? 'This draft changed in another browser. Reload to use the shared draft.'
+      : reviewState?.waiting
+        ? 'Waiting for the agent’s reply. Commenting will resume when the document is ready.'
+        : 'Commenting is paused until the document is ready.');
+}
+
+function showNotice(message) {
   if (commentingNotice.textContent !== message) commentingNotice.textContent = message;
   commentingNotice.hidden = false;
   clearTimeout(commentingNoticeTimer);
@@ -2380,7 +2590,8 @@ function installCommentingGate(root) {
 installCommentingGate(docEl);
 
 function updateCommentingHint() {
-  hintEl.textContent = commentingPaused() ? 'Document commenting paused'
+  hintEl.textContent = liveMode || liveSwitching ? 'JavaScript is on'
+    : commentingPaused() ? 'Document commenting paused'
     : blockMode ? 'Hover and click to comment' : 'Select text to comment';
 }
 
@@ -2549,7 +2760,8 @@ async function readSession() {
 async function pollSession() {
   if (sessionEnded) return;
   try {
-    if (submitting) return;
+    // Wait while the JavaScript switch renders a page state.
+    if (submitting || liveSwitching || renderingUpdate) return;
     await readSession();
     if (submitting || sessionEnded) return;
     if (reviewState.closed) { showDone(reviewState.history.at(-1)?.requestId); return; }
@@ -2562,6 +2774,7 @@ async function pollSession() {
       // Keep drafts in memory during a live update. Browser storage may be
       // blocked or full, so a page reload could silently discard them.
       const draft = currentDraft();
+      if (liveMode || liveSwitching) closeLivePage();
       const scroll = docWrap.scrollTop;
       renderingUpdate = true;
       updateButtons();

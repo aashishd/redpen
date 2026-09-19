@@ -41,6 +41,13 @@ const CSS_TYPES = new Map([['.css', 'text/css; charset=utf-8']]);
 const FONT_TYPES = new Map([
   ['.woff2', 'font/woff2'], ['.woff', 'font/woff'], ['.ttf', 'font/ttf'], ['.otf', 'font/otf'],
 ]);
+// Files a running HTML page may load from its own folder. Other files, such as
+// data or configuration, stay private even while page scripts can use the network.
+const LIVE_TYPES = new Map([
+  ...IMAGE_TYPES, ...FONT_TYPES, ...CSS_TYPES,
+  ['.js', 'text/javascript; charset=utf-8'], ['.mjs', 'text/javascript; charset=utf-8'],
+]);
+const MAX_LIVE_BYTES = 10 * 1024 * 1024;
 
 const AGENTS = {
   claude: {
@@ -293,7 +300,12 @@ function serve(args) {
   const savedSession = claimedSession.record;
   let sessionLink = savedSession?.link || '';
   const token = randomBytes(16).toString('hex');
-  const resourceState = { token, cssRequests: new Set(), cssPaths: new Set(), cssBytes: 0, cssEdges: new Map(), warnings: new Map() };
+  // The running page gets its own key. It never sees the session token, so its
+  // scripts cannot read or change the review.
+  const livePrefix = `/live/${randomBytes(16).toString('hex')}/`;
+  const livePage = livePrefix + encodeURIComponent(basename(realFilePath));
+  const liveSnapshotJs = readFileSync(join(PKG_ROOT, 'ui', 'live-snapshot.js'), 'utf8');
+  const resourceState ={ token, cssRequests: new Set(), cssPaths: new Set(), cssBytes: 0, cssEdges: new Map(), warnings: new Map() };
   const html = readFileSync(join(PKG_ROOT, 'ui', 'index.html'), 'utf8').replaceAll('__REDPEN_TOKEN__', token);
   const markedJs = readFileSync(join(PKG_ROOT, 'ui', 'marked.min.js'), 'utf8');
   const mermaidJs = readFileSync(join(PKG_ROOT, 'ui', 'mermaid.min.js'), 'utf8');
@@ -319,6 +331,10 @@ function serve(args) {
 
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
+    if (rendering === 'html' && url.pathname.startsWith(livePrefix)) {
+      if (url.pathname === livePage) return sendLivePage(req, res, text, liveSnapshotJs);
+      return handleLiveAsset(req, res, url.pathname.slice(livePrefix.length), assetRoot);
+    }
     // Do not accept a token mixed with additional query parameters.
     if (url.search !== `?t=${token}`) return send(res, 403, 'text/plain', 'forbidden');
     if (req.headers.origin && req.headers.origin !== `http://127.0.0.1:${server.address().port}`) {
@@ -350,7 +366,8 @@ function serve(args) {
       return handleThemeSetting(req, res);
     }
     if (req.method === 'GET' && url.pathname === '/doc') {
-      const body = JSON.stringify({ name: basename(filePath), path: filePath, rendering, text, base: '', revision: session.revision });
+      const live = rendering === 'html' ? livePage : null;
+      const body = JSON.stringify({ name: basename(filePath), path: filePath, rendering, text, base: '', revision: session.revision, live });
       return send(res, 200, 'application/json', body);
     }
     send(res, 404, 'text/plain', 'not found');
@@ -426,8 +443,9 @@ function send(res, status, type, body, headers = {}) {
     'cache-control': 'no-store',
     'x-content-type-options': 'nosniff',
     // The app is intentionally self-contained: only bundled scripts, its own
-    // tokenized endpoints, and sanitized blob images may load.
-    'content-security-policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'self'; media-src 'none'; form-action 'none'",
+    // tokenized endpoints, sanitized blob images, and checked small data images
+    // may load. The HTML review frame inherits this policy.
+    'content-security-policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'self'; media-src 'none'; form-action 'none'",
     'referrer-policy': 'no-referrer',
     ...headers,
   });
@@ -469,6 +487,46 @@ function handleAsset(req, res, url, root, state, category) {
       try { closeSync(fd); } catch { /* Descriptor is already unusable. */ }
     }
   }
+}
+
+// The page runs in a sandboxed frame with an opaque origin, even if it is
+// opened directly. It may use the network, but it cannot submit forms, open
+// windows, reach the review page, or leak its key through the Referer header.
+function sendLivePage(req, res, text, snapshotJs) {
+  if (req.method !== 'GET') return send(res, 405, 'text/plain', 'method not allowed', { allow: 'GET' });
+  const script = `<script>${snapshotJs}</script>`;
+  const head = /<head\b[^>]*>/i.exec(text);
+  const doctype = /^\s*<!doctype[^>]*>/i.exec(text);
+  const at = head ? head.index + head[0].length : doctype ? doctype[0].length : 0;
+  res.writeHead(200, {
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+    'content-security-policy': "sandbox allow-scripts allow-forms; form-action 'none'; frame-ancestors 'self'",
+    'referrer-policy': 'no-referrer',
+  });
+  res.end(text.slice(0, at) + script + text.slice(at));
+}
+
+function handleLiveAsset(req, res, encoded, root) {
+  if (req.method !== 'GET') return send(res, 405, 'text/plain', 'method not allowed', { allow: 'GET' });
+  let localPath;
+  try { localPath = encoded.split('/').map((part) => decodeURIComponent(part)).join('/'); } catch { return send(res, 404, 'text/plain', 'not found'); }
+  // Hidden files and folders often hold configuration, so the page never gets them.
+  const parts = localPath.split('/');
+  if (parts.length !== encoded.split('/').length || parts.some((part) => part.startsWith('.')) || !isSafeAssetPath(localPath, LIVE_TYPES)) {
+    return send(res, 404, 'text/plain', 'not found');
+  }
+  const extension = extname(localPath).toLowerCase();
+  try {
+    const bytes = readVerifiedAsset(root, localPath, MAX_LIVE_BYTES);
+    if (IMAGE_TYPES.has(extension) && (extension === '.svg' ? !hasSafeSvgRoot(bytes) : !hasImageMagic(bytes, localPath))) throw new Error('bad image');
+    if (FONT_TYPES.has(extension) && !hasFontMagic(bytes, localPath)) throw new Error('bad font');
+    // Fonts load in CORS mode, and the sandboxed page has an opaque origin.
+    const headers = FONT_TYPES.has(extension) ? { 'access-control-allow-origin': '*' }
+      : extension === '.svg' ? { 'content-security-policy': "default-src 'none'; style-src 'none'; script-src 'none'; img-src 'none'" } : {};
+    return send(res, 200, LIVE_TYPES.get(extension), bytes, headers);
+  } catch { return send(res, 404, 'text/plain', 'not found'); }
 }
 
 function isContainedAsset(root, target) {

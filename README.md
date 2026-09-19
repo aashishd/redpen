@@ -54,6 +54,22 @@ files use tokenized, descriptor-checked routes with `no-store` and `nosniff`.
 Small image and font data URLs are allowed. Rejected images show a placeholder.
 Rejected styles, fonts, and backgrounds show a compact warning in the page.
 
+HTML reviews also have a **JavaScript** switch in the header:
+
+- Turn it on to use the page with its scripts running. The page starts from the file.
+  Commenting, hover select, and sending pause while it is on.
+- While it is on, the page may load files from the internet. From its own folder
+  it may load only scripts, styles, images, and fonts, never hidden files such as
+  `.env` or files in `.config/`. It runs in a sandboxed frame
+  with its own key, so it cannot read or change the review session.
+- Turn it off to keep the page as it is. RedPen shows that state with scripts
+  removed, and commenting resumes on it. Form values, scroll positions, and
+  canvas drawings are kept. Styles loaded from the internet are copied into the page.
+- The kept state lasts only in this browser tab. A reload or a document update
+  shows the file again. Comments on content that only JavaScript created then
+  show **Reference unavailable**.
+- Local module scripts and root-relative paths such as `/app.js` do not load.
+
 This starts a local review session on a random localhost port, opens the file
 in your browser, and waits for feedback. The browser tab and header use the
 same red pen icon. Mermaid is served from that same local server. It has
@@ -68,6 +84,12 @@ no CDN, runtime fetch, or external network request. In the browser you can:
 - In HTML, hover marks a visible element, including controls, images, and SVG.
   Click it to comment. Turn off **Hover select** to use safe native interactions.
 - In Markdown and plain text, hover marks a paragraph or line. Click it to comment.
+- use the keyboard shortcuts listed in the header:
+  - `C` opens a comment for the hover-marked line or element,
+  - `⌘ + ↵` on macOS or `⌃ + ↵` elsewhere saves a new or edited comment,
+    and in the message box it does the same as **Send for review**,
+  - `⌃ + H` turns **Hover select** on or off.
+  `C` and `⌃ + H` do nothing while you type in a text box.
 - write a message or question above the bottom action buttons,
 - see submitted messages on the right and agent replies on the left,
 - expand read-only submitted comments and follow references that still match the document,
