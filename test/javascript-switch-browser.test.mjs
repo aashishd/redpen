@@ -125,7 +125,7 @@ test('the live page route shares only page files and never the session token', {
   assert.equal((await fetch(markdown.base.origin + '/live/' + '0'.repeat(32) + '/app.js')).status, 403);
 });
 
-test('the JavaScript switch runs the page, then keeps its state for commenting', { timeout: 60000 }, async (t) => {
+test('an HTML review opens on the state its scripts reached, and the actions switch runs the page', { timeout: 60000 }, async (t) => {
   const chrome = chromePath();
   if (!chrome || typeof WebSocket !== 'function') return t.skip('Chrome or global WebSocket is unavailable');
   const cleanup = cleanupAfter(t);
@@ -176,11 +176,23 @@ test('the JavaScript switch runs the page, then keeps its state for commenting',
   };
 
   await cdp.send('Page.navigate', { url: review.base.href }, sessionId);
-  await until(() => value('connected && !!richFrame && docText.includes("Static text")'), 'static HTML review');
-  assert.equal(await value('scriptSwitch.hidden'), false, 'HTML reviews show the JavaScript switch');
-  assert.equal(await value('reviewRoot.querySelector("#status").textContent'), 'Static text', 'Scripts stay off by default');
+  await until(() => value('connected && !!richFrame && docText.includes("Changed by app.js")'), 'HTML review with the state its scripts reached');
+  assert.deepEqual(await value('[scriptSwitch.hidden, scriptSwitch.textContent.trim(), scriptToggle.checked, liveMode, commentingPaused()]'),
+    [false, 'Enable Actions', false, false, false], 'HTML reviews show the actions switch, turned off');
+  assert.deepEqual(await value(`(() => {
+    const find = (selector) => reviewRoot.querySelector(selector);
+    return [find('#isolation').textContent, find('#chart').localName, /^data:image\\/(png|webp);base64,/.test(find('#chart').getAttribute('src')), !!find('#fallback'),
+      reviewRoot.ownerDocument.querySelectorAll('script').length, !!find('[data-redpen-warning]'), document.querySelectorAll('#doc iframe').length];
+  })()`), ['Parent blocked; No referrer', 'img', true, false, 0, false, 1], 'The first view keeps what the scripts drew, without the scripts');
 
-  // A comment made before JavaScript runs must survive the switch.
+  // Page actions stay off until the switch is on: a click comments, and the page's button does nothing.
+  await mouse(await framePoint('#add'));
+  await until(() => value('!popover.hidden'), 'comment editor on the page button');
+  assert.equal(await value('reviewRoot.querySelectorAll("#items li").length'), 0, 'The page button does nothing');
+  await click('#pop-cancel');
+  await until(() => value('popover.hidden'), 'closed comment editor');
+
+  // A comment made before actions are on must survive the switch.
   await mouse(await framePoint('#title'));
   await until(() => value('!popover.hidden'), 'title comment editor');
   await cdp.send('Input.insertText', { text: 'Title comment' }, sessionId);
@@ -191,13 +203,15 @@ test('the JavaScript switch runs the page, then keeps its state for commenting',
   await until(() => value('liveMode && !!liveFrame'), 'live page');
   assert.deepEqual(await value('[liveFrame.getAttribute("sandbox"), liveFrame.src.includes(' + JSON.stringify(token) + '), richFrame.hidden]'), ['allow-scripts allow-forms', false, true]);
   assert.deepEqual(await value('[commentingPaused(), reviseBtn.disabled, closeBtn.disabled, blockToggle.disabled, generalEl.disabled, hintEl.textContent]'),
-    [true, true, true, true, false, 'JavaScript is on']);
+    [true, true, true, true, false, 'Actions are on']);
   assert.equal(await value('document.querySelectorAll("#ink-layer *, #annotation-bands *, #comment-rail-bands *").length'), 0, 'Comment marks are hidden');
   assert.equal(await value('document.querySelector("#list .edit").disabled'), true);
 
   await until(() => liveValue('document.getElementById("status")?.textContent === "Changed by app.js"'), 'local script in the live page');
   assert.equal(await liveValue('document.getElementById("isolation").textContent'), 'Parent blocked; No referrer');
   assert.equal(await liveValue('getComputedStyle(document.getElementById("status")).color'), 'rgb(0, 90, 0)', 'Local styles load');
+  // Chrome ignores a click on a frame from another origin that appeared or moved in the last half second.
+  await pause(600);
   await mouse(await livePoint(70, 30));
   await until(() => liveValue('document.querySelectorAll("#items li").length === 1'), 'item added by a click');
   await mouse(await livePoint(230, 28));

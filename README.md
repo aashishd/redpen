@@ -45,8 +45,9 @@ error message.
 HTML is rendered as a rich static page in a same-origin sandboxed frame.
 RedPen keeps safe markup, inline styles, local stylesheets and nested local
 imports, local fonts, native controls, details, raster images, and safe inline
-or local SVG. Scripts, form submission, navigation, frames, media, canvas, and
-external requests are blocked. Relative paths resolve from the HTML or CSS file.
+or local SVG, including arrowheads and filter effects. Scripts, form submission,
+navigation, frames, media, canvas, and external requests are blocked. Relative
+paths resolve from the HTML or CSS file.
 Root-relative paths resolve from the reviewed document directory. Assets must
 remain in that real directory or a subdirectory. Traversal, encoded paths,
 symlink escapes, remote URLs, and bad signatures are rejected. Raster and font
@@ -54,21 +55,33 @@ files use tokenized, descriptor-checked routes with `no-store` and `nosniff`.
 Small image and font data URLs are allowed. Rejected images show a placeholder.
 Rejected styles, fonts, and backgrounds show a compact warning in the page.
 
-HTML reviews also have a **JavaScript** switch in the header:
+RedPen first runs the scripts of an HTML page, out of reach, until the page stops
+changing. It then shows the state the page reached with the scripts removed, so
+content that scripts draw is visible and you can comment on it. Buttons and
+other page actions do nothing in this view.
+
+- The page runs in a sandboxed frame with its own key, so it cannot read or
+  change the review session. It may load files from the internet. From its own
+  folder it may load only scripts, styles, images, and fonts, never hidden files
+  such as `.env` or files in `.config/`.
+- RedPen waits until the page has been quiet for half a second. A page that
+  never stops changing is shown about three seconds after it loads.
+- Form values, scroll positions, and canvas drawings are kept. Styles loaded
+  from the internet are copied into the page.
+- A reload or a document update runs the page again from the file.
+- Local module scripts and root-relative paths such as `/app.js` do not load.
+- Use `--no-js` for a file you do not trust. Its scripts never run, and RedPen
+  shows the file as it is.
+
+HTML reviews also have an **Enable Actions** switch in the header:
 
 - Turn it on to use the page with its scripts running. The page starts from the file.
   Commenting, hover select, and sending pause while it is on.
-- While it is on, the page may load files from the internet. From its own folder
-  it may load only scripts, styles, images, and fonts, never hidden files such as
-  `.env` or files in `.config/`. It runs in a sandboxed frame
-  with its own key, so it cannot read or change the review session.
 - Turn it off to keep the page as it is. RedPen shows that state with scripts
-  removed, and commenting resumes on it. Form values, scroll positions, and
-  canvas drawings are kept. Styles loaded from the internet are copied into the page.
-- The kept state lasts only in this browser tab. A reload or a document update
-  shows the file again. Comments on content that only JavaScript created then
-  show **Reference unavailable**.
-- Local module scripts and root-relative paths such as `/app.js` do not load.
+  removed, and commenting resumes on it.
+- The kept state lasts only in this browser tab. After a reload or a document
+  update, comments on content that only your actions created show
+  **Reference unavailable**.
 
 This starts a local review session on a random localhost port, opens the file
 in your browser, and waits for feedback. The browser tab and header use the
@@ -175,7 +188,8 @@ Support/redpen` on macOS, `%APPDATA%\redpen` on Windows, or
 are removed after **Send feedback and exit**.
 
 Options: `--out <file>` also writes the report to a file, `--port <n>` fixes
-the port, and `--no-open` prints the URL without opening a browser.
+the port, `--no-open` prints the URL without opening a browser, and `--no-js`
+never runs the scripts of an HTML page.
 
 ## Agent setup
 

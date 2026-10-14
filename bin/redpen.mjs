@@ -110,6 +110,7 @@ Options:
   --out <file>    Also write the feedback report to <file>.
   --port <n>      Listen on a fixed port (default: random).
   --no-open       Do not open the browser; print the URL only.
+  --no-js         Never run the scripts of an HTML page.
   -v, --version   Print the version.
   -h, --help      Show this help.
 
@@ -134,11 +135,13 @@ function reviewOptions(args) {
   let out;
   let port = 0;
   let open = true;
+  let scripts = true;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--out') out = args[++i];
     else if (a === '--port') port = Number(args[++i]);
     else if (a === '--no-open') open = false;
+    else if (a === '--no-js') scripts = false;
     else if (a.startsWith('-')) fail(`unknown option: ${a}`);
     else if (file) fail('only one file can be annotated at a time');
     else file = a;
@@ -151,7 +154,7 @@ function reviewOptions(args) {
   const extension = extname(filePath).toLowerCase();
   if (extension && !MARKDOWN_EXTS.includes(extension) && !HTML_EXTS.includes(extension)
     && !TEXT_EXTS.includes(extension)) fail(`unsupported file type; accepted formats: ${ACCEPTED_FORMATS}`);
-  return { filePath, extension, out, port, open };
+  return { filePath, extension, out, port, open, scripts };
 }
 
 function sessionStateFile(realFilePath) {
@@ -245,6 +248,8 @@ function writeSessionRecord(realFilePath, link, state) {
   }
 }
 
+const SCRIPTS_ALREADY_RUN = 'the running review session runs page scripts; close it before using --no-js';
+
 async function runReview(args) {
   const options = reviewOptions(args);
   const realFilePath = realpathSync(options.filePath);
@@ -261,13 +266,14 @@ async function runReview(args) {
       const state = await sessionResponse.json();
       const document = await documentResponse.json();
       if (realpathSync(document.path) !== realFilePath) throw new Error('saved session points to another document');
+      if (!options.scripts && document.live) throw new Error(SCRIPTS_ALREADY_RUN);
       process.stderr.write(`redpen: resuming ${options.filePath}\nredpen: ${url.href}\nredpen: waiting for feedback from the browser...\n`);
       if (options.open) openBrowser(url.href);
       const after = state.waiting || state.closed ? Math.max(0, state.nextTurn - 2) : state.nextTurn - 1;
       await sessionCommand('wait', [url.href, '--after', String(after)]);
       return;
     } catch (error) {
-      if (error.message === 'saved session points to another document') throw error;
+      if (error.message === 'saved session points to another document' || error.message === SCRIPTS_ALREADY_RUN) throw error;
       if (processRunning(record.pid)) throw new Error('the saved review session is running but not responding');
       // The durable state below starts a replacement worker and URL.
     }
@@ -276,7 +282,7 @@ async function runReview(args) {
 }
 
 function serve(args) {
-  const { filePath, extension, out, port, open } = reviewOptions(args);
+  const { filePath, extension, out, port, open, scripts } = reviewOptions(args);
   let text;
   try {
     const bytes = readFileSync(filePath);
@@ -301,7 +307,8 @@ function serve(args) {
   let sessionLink = savedSession?.link || '';
   const token = randomBytes(16).toString('hex');
   // The running page gets its own key. It never sees the session token, so its
-  // scripts cannot read or change the review.
+  // scripts cannot read or change the review. --no-js turns the running page off.
+  const runsScripts = rendering === 'html' && scripts;
   const livePrefix = `/live/${randomBytes(16).toString('hex')}/`;
   const livePage = livePrefix + encodeURIComponent(basename(realFilePath));
   const liveSnapshotJs = readFileSync(join(PKG_ROOT, 'ui', 'live-snapshot.js'), 'utf8');
@@ -331,7 +338,7 @@ function serve(args) {
 
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
-    if (rendering === 'html' && url.pathname.startsWith(livePrefix)) {
+    if (runsScripts && url.pathname.startsWith(livePrefix)) {
       if (url.pathname === livePage) return sendLivePage(req, res, text, liveSnapshotJs);
       return handleLiveAsset(req, res, url.pathname.slice(livePrefix.length), assetRoot);
     }
@@ -366,7 +373,7 @@ function serve(args) {
       return handleThemeSetting(req, res);
     }
     if (req.method === 'GET' && url.pathname === '/doc') {
-      const live = rendering === 'html' ? livePage : null;
+      const live = runsScripts ? livePage : null;
       const body = JSON.stringify({ name: basename(filePath), path: filePath, rendering, text, base: '', revision: session.revision, live });
       return send(res, 200, 'application/json', body);
     }

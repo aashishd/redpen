@@ -100,6 +100,8 @@
   #doc.rich { width: 100%; max-width: none; margin: 0; padding: 0; }
   #doc.rich iframe { display: block; width: 100%; min-height: 100%; border: 0; background: white; }
   #doc.rich iframe[hidden] { display: none; }
+  /* Browsers slow the animation frames of a frame they do not draw, so this one stays barely drawn. */
+  #doc.rich iframe.settling { position: absolute; left: 0; min-height: 0; opacity: 0.01; pointer-events: none; }
   #doc h1 { font-size: 1.7em; border-bottom: 1px solid var(--border); padding-bottom: .3em; }
   #doc h2 { font-size: 1.35em; margin-top: 1.6em; }
   #doc h3 { font-size: 1.1em; margin-top: 1.4em; }
@@ -429,10 +431,10 @@
     <span class="slider"></span>
     Hover select
   </label>
-  <label class="switch" id="script-switch" title="Run the page's JavaScript. Commenting pauses until you turn it off." hidden>
+  <label class="switch" id="script-switch" title="Use the page's buttons and other controls. Commenting pauses until you turn it off." hidden>
     <input type="checkbox" id="script-toggle">
     <span class="slider"></span>
-    JavaScript
+    Enable Actions
   </label>
 </header>
 <main>
@@ -547,7 +549,7 @@ let pendingSharedDraft = null;
 let sharedDraftSave = null;
 let applyingSharedDraft = false;
 let documentMeta = null;
-let liveFrame = null;      // the HTML page with its JavaScript running
+let liveFrame = null;      // the running HTML page, shown while actions are on
 let liveMode = false;
 let liveSwitching = false;
 
@@ -581,7 +583,7 @@ async function init() {
     docEl.textContent = 'Could not load the document. The redpen session may have ended.';
     return;
   }
-  await renderDocument(await res.json());
+  await renderDocument(await settledDocument(await res.json()));
   restorePaneState();
   setHoverSelect(true);
   const resizeObserver = new ResizeObserver(() => requestAnimationFrame(renderAnnotationInk));
@@ -600,6 +602,13 @@ async function init() {
   refreshHighlights();
   updateSidebar();
   setTimeout(pollSession, 750);
+}
+
+// An HTML page first runs its scripts in a frame the reviewer cannot use. RedPen
+// then shows the state the page reached, so its buttons do nothing.
+async function settledDocument(meta) {
+  const snapshot = meta.live ? await captureLivePage(meta.live) : null;
+  return snapshot ? { ...meta, text: snapshot.html } : meta;
 }
 
 async function renderDocument(meta) {
@@ -625,7 +634,7 @@ async function renderDocument(meta) {
   if (!richMode) {
     installImageFallbacks();
     await renderLocalSvgImages();
-  }
+  } else restoreElementScroll();
   const whole = reviewRoot.ownerDocument.createRange();
   whole.selectNodeContents(reviewRoot);
   docText = whole.toString();
@@ -858,7 +867,10 @@ function safeLocalSvgStyle(value) {
 // Local SVGs are fetched as text and never served as executable SVG. This
 // deliberately small subset has no animation, foreign content, or external
 // resource elements; the sanitized result is displayed only through a blob img.
-const SAFE_LOCAL_SVG_ELEMENTS = new Set(['svg', 'g', 'defs', 'symbol', 'use', 'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'text', 'tspan', 'title', 'desc', 'lineargradient', 'radialgradient', 'stop', 'clippath', 'mask']);
+// Markers and filter effects only change how shapes are drawn. feImage stays
+// out because it loads another resource.
+const SAFE_LOCAL_SVG_ELEMENTS = new Set(['svg', 'g', 'defs', 'symbol', 'use', 'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'text', 'tspan', 'title', 'desc', 'lineargradient', 'radialgradient', 'stop', 'clippath', 'mask', 'marker', 'filter',
+  'feblend', 'fecolormatrix', 'fecomponenttransfer', 'fecomposite', 'feconvolvematrix', 'fediffuselighting', 'fedisplacementmap', 'fedistantlight', 'fedropshadow', 'feflood', 'fefunca', 'fefuncb', 'fefuncg', 'fefuncr', 'fegaussianblur', 'femerge', 'femergenode', 'femorphology', 'feoffset', 'fepointlight', 'fespecularlighting', 'fespotlight', 'fetile', 'feturbulence']);
 const MAX_LOCAL_SVG_ELEMENTS = 10000;
 
 const ELEMENT_TEXT_LIMIT = 500;
@@ -1660,10 +1672,62 @@ function commentOnHoverTarget() {
   return true;
 }
 
-// ---- JavaScript switch: run an HTML page, then comment on the state it reached ----
+// ---- running HTML pages: show the state the scripts reached, and let the reviewer use the page ----
 
 const MAX_LIVE_SNAPSHOT = 8 * 1024 * 1024;
+const MAX_LIVE_SETTLE = 8000;
 let liveScroll = 0;
+
+function createLiveFrame(live) {
+  const frame = document.createElement('iframe');
+  // No allow-same-origin: the page gets an opaque origin and cannot reach RedPen.
+  frame.setAttribute('sandbox', 'allow-scripts allow-forms');
+  frame.referrerPolicy = 'no-referrer';
+  frame.style.height = docWrap.clientHeight + 'px';
+  frame.src = live;
+  return frame;
+}
+
+// A hidden tab draws no animation frames, so a page that runs there can stay incomplete.
+function pageVisible() {
+  return new Promise((resolve) => {
+    if (document.visibilityState === 'visible') return resolve();
+    document.addEventListener('visibilitychange', function shown() {
+      if (document.visibilityState !== 'visible') return;
+      document.removeEventListener('visibilitychange', shown);
+      resolve();
+    });
+  });
+}
+
+// Run the page out of reach, over the visible part of the document, and return
+// its state once it stops changing. Returns null when the page gives no state;
+// the file is then shown without scripts.
+async function captureLivePage(live) {
+  await pageVisible();
+  const frame = createLiveFrame(live);
+  frame.title = 'Reviewed HTML document while it loads';
+  frame.className = 'settling';
+  frame.inert = true;
+  frame.style.top = docWrap.scrollTop + 'px';
+  docEl.classList.add('rich'); // The page needs its final width to lay out.
+  docEl.append(frame);
+  await new Promise((resolve) => {
+    const finish = () => {
+      clearTimeout(timer);
+      window.removeEventListener('message', receive);
+      resolve();
+    };
+    const receive = (event) => {
+      if (event.source === frame.contentWindow && event.data?.type === 'redpen-live-idle') finish();
+    };
+    const timer = setTimeout(finish, MAX_LIVE_SETTLE);
+    window.addEventListener('message', receive);
+  });
+  const snapshot = await requestLiveSnapshot(frame);
+  frame.remove();
+  return snapshot;
+}
 
 scriptToggle.addEventListener('change', () => {
   if (scriptToggle.checked) openLivePage();
@@ -1681,13 +1745,8 @@ function openLivePage() {
   updateButtons(); // Pauses commenting and keeps any open comment as a draft.
   blockToggle.disabled = true;
   liveScroll = docWrap.scrollTop;
-  liveFrame = document.createElement('iframe');
-  // No allow-same-origin: the page gets an opaque origin and cannot reach RedPen.
-  liveFrame.setAttribute('sandbox', 'allow-scripts allow-forms');
-  liveFrame.title = 'Reviewed HTML document with JavaScript on';
-  liveFrame.referrerPolicy = 'no-referrer';
-  liveFrame.style.height = docWrap.clientHeight + 'px';
-  liveFrame.src = documentMeta.live;
+  liveFrame = createLiveFrame(documentMeta.live);
+  liveFrame.title = 'Reviewed HTML document with actions on';
   richFrame.hidden = true;
   docEl.append(liveFrame);
   renderAnnotationInk();
@@ -1705,7 +1764,7 @@ async function keepLivePage() {
     restoreDraft(currentDraft());
     refreshHighlights();
     updateSidebar();
-    showNotice('Could not keep the JavaScript page state. The page shows its earlier state.');
+    showNotice('Could not keep the page state. The page shows its earlier state.');
     return;
   }
   const draft = currentDraft();
@@ -1715,7 +1774,7 @@ async function keepLivePage() {
   activeAnnotation = null;
   try {
     await renderDocument({ ...documentMeta, text: snapshot.html });
-    restoreLiveScroll(snapshot.scrollY);
+    docWrap.scrollTop = snapshot.scrollY;
   } finally {
     draft.general = generalEl.value;
     restoreDraft(draft);
@@ -1761,14 +1820,14 @@ function requestLiveSnapshot(frame) {
   });
 }
 
-function restoreLiveScroll(scrollY) {
+// A page state keeps the scroll position of each scrolled element.
+function restoreElementScroll() {
   for (const element of reviewRoot.querySelectorAll('[data-redpen-scroll]')) {
     const [left, top] = element.getAttribute('data-redpen-scroll').split(',').map(Number);
     element.removeAttribute('data-redpen-scroll');
     element.scrollLeft = left || 0;
     element.scrollTop = top || 0;
   }
-  docWrap.scrollTop = scrollY;
 }
 
 // ---- popover ----
@@ -2558,7 +2617,7 @@ function hideCommentingNotice() {
 
 function showCommentingNotice() {
   showNotice(liveMode || liveSwitching
-    ? 'JavaScript is on. Turn it off to comment.'
+    ? 'Actions are on. Turn them off to comment.'
     : sharedDraftConflict
       ? 'This draft changed in another browser. Reload to use the shared draft.'
       : reviewState?.waiting
@@ -2590,7 +2649,7 @@ function installCommentingGate(root) {
 installCommentingGate(docEl);
 
 function updateCommentingHint() {
-  hintEl.textContent = liveMode || liveSwitching ? 'JavaScript is on'
+  hintEl.textContent = liveMode || liveSwitching ? 'Actions are on'
     : commentingPaused() ? 'Document commenting paused'
     : blockMode ? 'Hover and click to comment' : 'Select text to comment';
 }
@@ -2760,7 +2819,7 @@ async function readSession() {
 async function pollSession() {
   if (sessionEnded) return;
   try {
-    // Wait while the JavaScript switch renders a page state.
+    // Wait while the actions switch renders a page state.
     if (submitting || liveSwitching || renderingUpdate) return;
     await readSession();
     if (submitting || sessionEnded) return;
@@ -2771,10 +2830,12 @@ async function pollSession() {
       const response = await fetch('/doc?t=' + token, { signal: AbortSignal.timeout(10000) });
       if (!response.ok) throw new Error('Document unavailable');
       const meta = await response.json();
+      if (liveMode || liveSwitching) closeLivePage();
+      // The earlier document and its comments stay in place while an HTML page runs.
+      const settled = await settledDocument(meta);
       // Keep drafts in memory during a live update. Browser storage may be
       // blocked or full, so a page reload could silently discard them.
       const draft = currentDraft();
-      if (liveMode || liveSwitching) closeLivePage();
       const scroll = docWrap.scrollTop;
       renderingUpdate = true;
       updateButtons();
@@ -2783,7 +2844,7 @@ async function pollSession() {
       activeAnnotation = null;
       annotations = [];
       try {
-        await renderDocument(meta);
+        await renderDocument(settled);
         documentPending = false;
       } finally {
         // Message input remains available while document rendering awaits assets.

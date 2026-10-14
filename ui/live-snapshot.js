@@ -1,12 +1,55 @@
-// RedPen adds this script to the top of an HTML page while JavaScript is on.
-// When the reviewer turns JavaScript off, RedPen asks for the page's current
-// state. The reply is untrusted page content: RedPen sanitizes it exactly like
-// the original file before it shows it.
+// RedPen adds this script to the top of an HTML page that runs its scripts.
+// RedPen asks for the page's current state when the page first settles, and
+// again when the reviewer turns actions off. The reply is untrusted page
+// content: RedPen sanitizes it exactly like the original file before it shows it.
 (() => {
   'use strict';
   const reviewPage = window.parent;
   const outerHTML = Object.getOwnPropertyDescriptor(Element.prototype, 'outerHTML').get;
   const MAX_IMAGE_URL = 256 * 1024;
+  const QUIET = 500;
+  const MAX_SETTLE = 3000;
+
+  // Tell RedPen when the page stops changing, so the first view shows what the
+  // scripts drew. Page changes, loaded files, and animation frames all count.
+  // A page that never stops is reported after a time limit.
+  let lastChange = 0;
+  const changed = () => { lastChange = performance.now(); };
+  const changes = new MutationObserver(changed);
+  changes.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+  let loads = null;
+  try { loads = new PerformanceObserver(changed); loads.observe({ type: 'resource' }); } catch { /* Page changes still count. */ }
+  // Animation frames that the page asked for and that have not run yet. A busy
+  // computer can delay a frame for longer than the quiet period.
+  const frames = new Set();
+  const requestFrame = window.requestAnimationFrame;
+  const cancelFrame = window.cancelAnimationFrame;
+  window.requestAnimationFrame = function (callback) {
+    const id = requestFrame.call(window, function (time) {
+      frames.delete(id);
+      changed();
+      return callback.call(this, time);
+    });
+    frames.add(id);
+    return id;
+  };
+  window.cancelAnimationFrame = function (id) {
+    frames.delete(id);
+    return cancelFrame.call(window, id);
+  };
+  window.addEventListener('load', () => {
+    const limit = performance.now() + MAX_SETTLE;
+    changed();
+    (function report() {
+      if (frames.size) changed();
+      const now = performance.now();
+      const wait = Math.min(QUIET - (now - lastChange), limit - now);
+      if (wait > 0) return void setTimeout(report, wait);
+      changes.disconnect();
+      loads?.disconnect();
+      reviewPage.postMessage({ type: 'redpen-live-idle' }, '*');
+    })();
+  }, { once: true });
 
   // Copy live values that the HTML markup does not hold. The copy is taken
   // before any change, so both lists keep the same element order.
