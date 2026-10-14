@@ -2,6 +2,18 @@
 
 Changes in each RedPen release.
 
+## 0.8.0
+
+- Run the scripts of an HTML page before review. RedPen waits until the page
+  stops changing, then shows that state with scripts removed, so content that
+  scripts draw can be reviewed. Page buttons and other actions do nothing in
+  this view.
+- Rename the **JavaScript** switch to **Enable Actions**. Turn it on to use the
+  page's buttons and other controls.
+- Add `--no-js`. HTML page scripts now run by default; use `--no-js` for a file
+  you do not trust, and its scripts never run.
+- Show inline SVG with arrowheads and filter effects in HTML reviews.
+
 ## 0.7.0
 
 - Add keyboard shortcuts and list them in the header. `C` comments on the
