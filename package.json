@@ -3,6 +3,11 @@
   "version": "0.8.0",
   "description": "Collect red-pen feedback on Markdown, HTML, or plain-text files in the browser. Feedback is printed to stdout for a coding agent to act on.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aashishd/redpen.git"
+  },
+  "homepage": "https://github.com/aashishd/redpen#readme",
   "type": "module",
   "scripts": {
     "test": "node --test"
