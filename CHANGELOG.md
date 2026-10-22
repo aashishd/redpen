@@ -2,6 +2,21 @@
 
 Changes in each RedPen release.
 
+## 1.0.0
+
+First stable release.
+
+- Show `<picture>` images in Markdown reviews. RedPen picks the light or dark
+  image that matches its theme. **Auto** follows the system setting, and the
+  **Dark** and **Light** buttons decide when chosen. A source needs a
+  `prefers-color-scheme` rule and one local image; other sources fall back to
+  the `<img>`.
+- Show SVG images that use `<style>` blocks, in Markdown and HTML reviews.
+  Styles with `@import`, outside links, or animation still show a placeholder.
+- Rewrite the README for first-time readers, with a review-loop diagram. Move
+  the full reference to `docs/reference.md`.
+- Link the npm page to the GitHub repository.
+
 ## 0.8.0
 
 - Run the scripts of an HTML page before review. RedPen waits until the page
