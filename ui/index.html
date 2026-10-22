@@ -530,6 +530,9 @@ let richFrame = null;
 let reviewRoot = docEl;
 let reviewWindow = window;
 let richMode = false;
+// A picture can switch back to an image when the theme changes, so its blobs
+// stay valid until the next document render.
+let pictureBlobUrls = [];
 let reviewState = null;
 let loadedRevision = 0;
 let submitting = false;
@@ -620,6 +623,8 @@ async function renderDocument(meta) {
   reviewWindow = window;
   docEl.classList.remove('rich');
   docEl.replaceChildren();
+  pictureBlobUrls.forEach((url) => URL.revokeObjectURL(url));
+  pictureBlobUrls = [];
   if (meta.rendering === 'markdown') {
     docEl.innerHTML = sanitizeMarkdown(marked.parse(meta.text));
     await renderMermaidBlocks();
@@ -647,7 +652,7 @@ async function renderDocument(meta) {
 
 // Markdown output is treated as static content. Image paths are the only
 // preserved URL-bearing values, and they become tokenized local asset routes.
-const BLOCKED_DOCUMENT_ELEMENTS = 'script,style,link,meta,base,iframe,frame,frameset,object,embed,portal,form,input,button,select,textarea,option,optgroup,fieldset,legend,label,output,progress,meter,svg,math,picture,source,track,audio,video,canvas,template';
+const BLOCKED_DOCUMENT_ELEMENTS = 'script,style,link,meta,base,iframe,frame,frameset,object,embed,portal,form,input,button,select,textarea,option,optgroup,fieldset,legend,label,output,progress,meter,svg,math,track,audio,video,canvas,template';
 const SAFE_IMAGE_ATTRS = ['alt', 'title', 'width', 'height'];
 
 function sanitizeMarkdown(htmlStr) {
@@ -660,13 +665,61 @@ function sanitizeMarkdown(htmlStr) {
 }
 
 function sanitizeDocumentFragment(fragment) {
+  const sources = new Set();
+  fragment.querySelectorAll('picture').forEach((picture) => sanitizePicture(picture, sources));
+  fragment.querySelectorAll('source').forEach((source) => { if (!sources.has(source)) source.remove(); });
   fragment.querySelectorAll(BLOCKED_DOCUMENT_ELEMENTS).forEach((node) => node.remove());
   fragment.querySelectorAll('*').forEach((element) => {
     if (element.localName === 'img') return sanitizeImage(element);
+    if (sources.has(element)) return;
     const mermaidClass = element.localName === 'code' && /^language-mermaid$/.test(element.getAttribute('class') || '');
     for (const attribute of [...element.attributes]) {
       if (!mermaidClass || attribute.name !== 'class') element.removeAttribute(attribute.name);
     }
+  });
+}
+
+// A picture keeps its img and the sources that choose a light or dark image.
+// Each source is rebuilt from one local image path, so it passes the same
+// checks as an img. Other sources are dropped and the img is shown instead.
+function sanitizePicture(picture, sources) {
+  const image = [...picture.children].find((child) => child.localName === 'img');
+  if (!image) return picture.remove();
+  const kept = [];
+  if (localAssetUrl(image.getAttribute('src'))) {
+    for (const child of picture.children) {
+      if (child === image) break;
+      const source = child.localName === 'source' && sanitizeSource(child);
+      if (source) { kept.push(source); sources.add(source); }
+    }
+  }
+  picture.replaceChildren(...kept, image);
+}
+
+function sanitizeSource(original) {
+  const scheme = /^\(\s*prefers-color-scheme\s*:\s*(dark|light)\s*\)$/i.exec((original.getAttribute('media') || '').trim())?.[1].toLowerCase();
+  const srcset = (original.getAttribute('srcset') || '').trim();
+  const asset = /^[^\s,]+$/.test(srcset) && localAssetUrl(srcset);
+  if (!scheme || !asset) return null;
+  const source = document.createElement('source');
+  source.dataset.redpenScheme = scheme;
+  source.setAttribute('media', pictureSourceMedia(scheme));
+  // SVG stays inert until it has been fetched as text and sanitized, as for img.
+  if (isLocalSvgAsset(asset)) source.dataset.redpenSvgAsset = asset;
+  else source.setAttribute('srcset', asset);
+  return source;
+}
+
+// Auto leaves the choice to the system setting. A chosen theme decides it.
+function pictureSourceMedia(scheme) {
+  const theme = document.documentElement.dataset.theme;
+  if (!theme) return `(prefers-color-scheme: ${scheme})`;
+  return theme === scheme ? 'all' : 'not all';
+}
+
+function syncPictureSources() {
+  docEl.querySelectorAll('picture > source[data-redpen-scheme]').forEach((source) => {
+    source.setAttribute('media', pictureSourceMedia(source.dataset.redpenScheme));
   });
 }
 
@@ -723,7 +776,7 @@ function isLocalSvgAsset(source) {
 }
 
 function installImageFallbacks() {
-  docEl.querySelectorAll('img').forEach((image) => {
+  docEl.querySelectorAll('img, picture > source').forEach((image) => {
     const source = image.dataset.redpenSvgAsset;
     if (isLocalSvgAsset(source)) {
       // The marker is inert and removed before the sanitized blob is shown.
@@ -731,24 +784,31 @@ function installImageFallbacks() {
       delete image.dataset.redpenSvgAsset;
       return;
     }
-    image.addEventListener('error', () => replaceImageWithPlaceholder(image), { once: true });
+    if (image.localName === 'img') image.addEventListener('error', () => replaceImageWithPlaceholder(image), { once: true });
   });
 }
 
 async function renderLocalSvgImages() {
-  const images = [...docEl.querySelectorAll('img')].filter((image) => isLocalSvgAsset(image._redpenAssetUrl));
+  const images = [...docEl.querySelectorAll('img, picture > source')].filter((image) => isLocalSvgAsset(image._redpenAssetUrl));
   await Promise.all(images.map(async (image) => {
     try {
       const response = await fetch(image._redpenAssetUrl);
       if (!response.ok) throw new Error('asset unavailable');
-      const safeSvg = sanitizeLocalSvg(await response.text());
+      const safeSvg = sanitizeLocalSvg(await response.text(), { asImage: true });
       if (!safeSvg) throw new Error('unsafe SVG');
       const blobUrl = URL.createObjectURL(new Blob([safeSvg], { type: 'image/svg+xml' }));
-      image.addEventListener('load', () => URL.revokeObjectURL(blobUrl), { once: true });
+      if (image.localName === 'source') {
+        pictureBlobUrls.push(blobUrl);
+        image.srcset = blobUrl;
+        return;
+      }
+      if (image.parentElement?.localName === 'picture') pictureBlobUrls.push(blobUrl);
+      else image.addEventListener('load', () => URL.revokeObjectURL(blobUrl), { once: true });
       image.addEventListener('error', () => { URL.revokeObjectURL(blobUrl); replaceImageWithPlaceholder(image); }, { once: true });
       image.src = blobUrl;
     } catch {
-      replaceImageWithPlaceholder(image);
+      if (image.localName === 'source') image.remove();
+      else replaceImageWithPlaceholder(image);
     }
   }));
 }
@@ -868,7 +928,9 @@ function safeLocalSvgStyle(value) {
 // deliberately small subset has no animation, foreign content, or external
 // resource elements; the sanitized result is displayed only through a blob img.
 // Markers and filter effects only change how shapes are drawn. feImage stays
-// out because it loads another resource.
+// out because it loads another resource. SVG files shown as images may also
+// keep style blocks that pass the style checks; an image cannot apply them
+// outside itself.
 const SAFE_LOCAL_SVG_ELEMENTS = new Set(['svg', 'g', 'defs', 'symbol', 'use', 'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'text', 'tspan', 'title', 'desc', 'lineargradient', 'radialgradient', 'stop', 'clippath', 'mask', 'marker', 'filter',
   'feblend', 'fecolormatrix', 'fecomponenttransfer', 'fecomposite', 'feconvolvematrix', 'fediffuselighting', 'fedisplacementmap', 'fedistantlight', 'fedropshadow', 'feflood', 'fefunca', 'fefuncb', 'fefuncg', 'fefuncr', 'fegaussianblur', 'femerge', 'femergenode', 'femorphology', 'feoffset', 'fepointlight', 'fespecularlighting', 'fespotlight', 'fetile', 'feturbulence']);
 const MAX_LOCAL_SVG_ELEMENTS = 10000;
@@ -1067,7 +1129,7 @@ function rangeLocation(range) {
   return null;
 }
 
-function sanitizeLocalSvg(markup) {
+function sanitizeLocalSvg(markup, { asImage = false } = {}) {
   if (markup.length > 5 * 1024 * 1024) return null;
   const parsed = new DOMParser().parseFromString(markup, 'image/svg+xml');
   const svg = parsed.documentElement;
@@ -1075,7 +1137,9 @@ function sanitizeLocalSvg(markup) {
   const elements = [svg, ...svg.querySelectorAll('*')];
   if (elements.length > MAX_LOCAL_SVG_ELEMENTS) return null;
   for (const element of elements) {
-    if (element.namespaceURI !== SVG_NAMESPACE || !SAFE_LOCAL_SVG_ELEMENTS.has(element.localName.toLowerCase())) return null;
+    const tag = element.localName.toLowerCase();
+    const imageStyle = asImage && tag === 'style' && safeLocalSvgStyle(element.textContent);
+    if (element.namespaceURI !== SVG_NAMESPACE || !imageStyle && !SAFE_LOCAL_SVG_ELEMENTS.has(tag)) return null;
     for (const attribute of [...element.attributes]) {
       const name = attribute.localName.toLowerCase();
       const value = attribute.value.trim();
@@ -1141,7 +1205,7 @@ async function renderRichHtml(htmlStr) {
       if (!route) throw new Error('blocked');
       const response = await fetch(route);
       if (!response.ok) throw new Error('missing');
-      const safe = sanitizeLocalSvg(await response.text());
+      const safe = sanitizeLocalSvg(await response.text(), { asImage: true });
       if (!safe) throw new Error('unsafe');
       const blob = URL.createObjectURL(new Blob([safe], { type: 'image/svg+xml' }));
       const revoke = () => URL.revokeObjectURL(blob);
@@ -1321,6 +1385,7 @@ function applyTheme(theme) {
   themeAutoBtn.setAttribute('aria-pressed', String(theme === 'auto'));
   themeLightBtn.setAttribute('aria-pressed', String(theme === 'light'));
   themeDarkBtn.setAttribute('aria-pressed', String(theme === 'dark'));
+  syncPictureSources();
 }
 
 function saveTheme(theme) {

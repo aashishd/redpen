@@ -28,6 +28,26 @@ Invalid, oversized, or rejected diagrams stay as escaped source with a short
 error message. Mermaid is served from the local review server. It has no CDN,
 runtime fetch, or external network request.
 
+## Images in Markdown
+
+Markdown images must be local files in the document's folder or a subfolder.
+SVG files are cleaned before they are shown. They may use `<style>` blocks,
+but styles with `@import`, outside links, or animation show a placeholder.
+
+Markdown keeps `<picture>` for light and dark images:
+
+```html
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagram-dark.svg">
+  <img alt="Diagram" src="docs/diagram-light.svg">
+</picture>
+```
+
+- On **Auto**, the browser picks the image from your system setting.
+- On **Dark** or **Light**, RedPen's choice decides.
+- A source is kept only if it has a `prefers-color-scheme` rule and one local
+  image file. Other sources are dropped and the `<img>` is shown.
+
 ## HTML pages
 
 HTML is rendered as a rich static page in a same-origin sandboxed frame.

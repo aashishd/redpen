@@ -224,7 +224,7 @@ test('client image policy retains only local image routes and safe attributes', 
   assert.match(ui, /\(navigator\.platform \|\| ''\).*\? '\(⌘ \+ ↵\)' : '\(⌃ \+ ↵\)'/);
   assert.match(ui, /e\.key === 'Enter' && \(e\.metaKey \|\| e\.ctrlKey\)\) saveAnnotation\(\)/);
   assert.match(ui, /SAFE_IMAGE_ATTRS = \['alt', 'title', 'width', 'height'\]/);
-  assert.match(ui, /BLOCKED_DOCUMENT_ELEMENTS.*picture,source.*canvas/);
+  assert.match(ui, /BLOCKED_DOCUMENT_ELEMENTS.*svg,math,track,audio,video,canvas/);
   assert.match(ui, /sanitizeLocalSvg/);
   assert.match(ui, /URL\.createObjectURL\(new Blob\(\[safeSvg\]/);
   assert.match(ui, /image\.dataset\.redpenSvgAsset = source/);
